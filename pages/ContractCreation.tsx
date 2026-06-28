@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Contract Creation Page
  * Form tạo hợp đồng với tính toán tự động
@@ -28,8 +29,6 @@ import {
 } from '../src/utils/currencyUtils';
 import { isValidDateRange, getDateRangeErrorMessage } from '../src/utils/validators';
 import { SearchableSelect, SelectOption } from '../components/SearchableSelect';
-import { db } from '../src/config/firebase';
-import { doc, updateDoc, collection, onSnapshot, query, where } from 'firebase/firestore';
 import { getCenters, Center } from '../src/services/centerService';
 import { ModalPortal } from '@/components/modal-portal';
 
@@ -357,7 +356,7 @@ export const ContractCreation: React.FC = () => {
 
   // Fetch active discounts
   useEffect(() => {
-    const q = query(collection(db, 'discounts'), where('status', '==', 'Kích hoạt'));
+    const q = query(collection(null as any /* firebase removed */, 'discounts'), where('status', '==', 'Kích hoạt'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({
         id: doc.id,
@@ -827,7 +826,7 @@ export const ContractCreation: React.FC = () => {
       // Directly update student for PARTIAL payment (sync with DebtManagement)
       if (status === ContractStatus.PARTIAL && selectedStudent?.id) {
         try {
-          await updateDoc(doc(db, 'students', selectedStudent.id), {
+          await updateDoc(doc(null as any /* firebase removed */, 'students', selectedStudent.id), {
             status: 'Nợ hợp đồng',
             contractDebt: remainingAmount,
             nextPaymentDate: nextPaymentDate || null,

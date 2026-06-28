@@ -1,0 +1,2544 @@
+﻿/**
+ * Attendance Page
+ * ─Éiß╗âm danh vß╗¢i 5 trß║íng th├íi: ─É├║ng giß╗¥, Trß╗à giß╗¥, Vß║»ng, Bß║úo l╞░u, ─É├ú bß╗ôi
+ * Logic: Vß║»ng ΓåÆ Auto tß║ío record bß╗ôi b├ái
+ * + Tab R├á so├ít ─æiß╗âm danh cho lß╗à t├ón
+ */
+
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { useSearchParams } from 'react-router-dom';
+import { Calendar, Save, CheckCircle, AlertCircle, Clock, BookOpen, Users, Plus, ClipboardCheck, XCircle, AlertTriangle, ChevronDown, Trash2 } from 'lucide-react';
+import { ModalPortal } from '@/components/modal-portal';
+import { SearchableClassDropdown } from '../src/features/attendance';
+import { AttendanceStatus, AttendanceRecord, StudentStatus } from '../types';
+import { useClasses } from '../src/hooks/useClasses';
+import { useStudents } from '../src/hooks/useStudents';
+import { useAttendance } from '../src/hooks/useAttendance';
+import { useAuth } from '../src/hooks/useAuth';
+import { usePermissions } from '../src/hooks/usePermissions';
+import { useSessions } from '../src/hooks/useSessions';
+import { ClassSession, generateSessionsForClass, saveSessionsToFirestore, deleteSessionsByClass, renumberSessionsByDate } from '../src/services/sessionService';
+import { formatSchedule } from '../src/utils/scheduleUtils';
+import { collection, query, where, getDocs, addDoc, onSnapshot } from 'firebase/firestore';
+import { db } from '../src/config/firebase';
+import { useHolidays } from '../src/hooks/useHolidays';
+import { Holiday } from '../types';
+
+interface StudentAttendanceState {
+  studentId: string;
+  studentName: string;
+  studentCode: string;
+  status: AttendanceStatus;
+  note: string;
+  // Th├┤ng tin ─æiß╗âm sß╗æ
+  homeworkCompletion?: number;  // % BTVN (0-100)
+  testName?: string;            // T├¬n b├ái KT
+  score?: number;               // ─Éiß╗âm (0-10)
+  bonusPoints?: number;         // ─Éiß╗âm th╞░ß╗ƒng
+  // Th├┤ng tin ─æi hß╗ìc
+  punctuality?: 'onTime' | 'late' | '';  // ─É├║ng giß╗¥ / Trß╗à giß╗¥
+}
+
+// Interface for pending attendance save (Phase 4)
+interface PendingAttendanceSave {
+  classId: string;
+  className: string;
+  date: string;
+  attendanceData: StudentAttendanceState[];
+}
+
+// Interface cho r├á so├ít ─æiß╗âm danh
+interface UnmarkedStudent {
+  id: string;
+  sessionId: string;
+  sessionDate: string;
+  sessionNumber: number;
+  classId: string;
+  className: string;
+  studentId: string;
+  studentName: string;
+}
+
+interface SessionWithUnmarked {
+  sessionId: string;
+  sessionDate: string;
+  sessionNumber: number;
+  classId: string;
+  className: string;
+  unmarkedStudents: UnmarkedStudent[];
+}
+
+export const Attendance: React.FC = () => {
+  const { user, staffData } = useAuth();
+  const { shouldShowOnlyOwnClasses, staffId } = usePermissions();
+  const onlyOwnClasses = shouldShowOnlyOwnClasses('attendance');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const { classes: allClasses, loading: classLoading } = useClasses();
+  const { students: allStudents, loading: studentLoading } = useStudents();
+  const { checkExisting, loadStudentAttendance, studentAttendance, saveAttendance } = useAttendance();
+  const { holidays } = useHolidays();
+
+  const isValidDateParam = useCallback((v: string | null) => {
+    if (!v) return false;
+    // Expect YYYY-MM-DD
+    return /^\d{4}-\d{2}-\d{2}$/.test(v);
+  }, []);
+
+  const sanitizeTabParam = useCallback((v: string | null) => {
+    return v === 'review' ? 'review' : 'attendance';
+  }, []);
+
+  // Helper function to get today's date in local timezone (YYYY-MM-DD)
+  const getTodayLocalDate = (): string => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Helper: Check if a date is a holiday for a specific class
+  const getHolidayForDate = (dateStr: string, classId?: string): Holiday | null => {
+    if (!holidays.length) return null;
+    
+    for (const holiday of holidays) {
+      if (holiday.status !== '─É├ú ├íp dß╗Ñng') continue;
+      
+      // Check if date falls within holiday range
+      const start = holiday.startDate;
+      const end = holiday.endDate || holiday.startDate;
+      if (dateStr < start || dateStr > end) continue;
+      
+      // Check apply type
+      if (holiday.applyType === 'all_classes' || holiday.applyType === 'all_branches') {
+        return holiday;
+      }
+      
+      if (holiday.applyType === 'specific_classes' && classId) {
+        if (holiday.classIds?.includes(classId)) {
+          return holiday;
+        }
+      }
+      
+      // For specific_branch, we'd need branch info from class - skip for now
+    }
+    
+    return null;
+  };
+
+  // Filter classes for teachers (onlyOwnClasses)
+  const classes = useMemo(() => {
+    if (!onlyOwnClasses || !staffData) return allClasses;
+    const myName = staffData.name;
+    const myId = staffData.id || staffId;
+    return allClasses.filter(cls => 
+      cls.teacher === myName || 
+      cls.teacherId === myId ||
+      cls.assistant === myName ||
+      cls.assistantId === myId ||
+      cls.foreignTeacher === myName ||
+      cls.foreignTeacherId === myId
+    );
+  }, [allClasses, onlyOwnClasses, staffData, staffId]);
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'attendance' | 'review'>(() =>
+    sanitizeTabParam(searchParams.get('tab')) as 'attendance' | 'review'
+  );
+
+  const [selectedClassId, setSelectedClassId] = useState(() => searchParams.get('classId') || '');
+  const [selectedSession, setSelectedSession] = useState<ClassSession | null>(null);
+  const [sessionDropdownOpen, setSessionDropdownOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 420, maxHeight: 400 });
+  const sessionDropdownRef = useRef<HTMLDivElement>(null);
+  const dropdownPanelRef = useRef<HTMLDivElement>(null);
+  const sessionButtonRef = useRef<HTMLButtonElement>(null);
+
+  const [attendanceDate, setAttendanceDate] = useState(() => {
+    const dateParam = searchParams.get('date');
+    return isValidDateParam(dateParam) ? (dateParam as string) : getTodayLocalDate();
+  });
+  const [attendanceData, setAttendanceData] = useState<StudentAttendanceState[]>([]);
+  const [existingRecord, setExistingRecord] = useState<AttendanceRecord | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [isResetting, setIsResetting] = useState(false); // Flag to prevent sync useEffect from overwriting reset
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [useSessionMode, setUseSessionMode] = useState(() => {
+    const mode = searchParams.get('mode');
+    return mode === 'manual' ? false : true;
+  }); // Default to session mode
+  const [showAddSessionModal, setShowAddSessionModal] = useState(false);
+  const [showGradeFields, setShowGradeFields] = useState(false); // Toggle hiß╗ân thß╗ï ─æiß╗âm sß╗æ
+  const [generatingSessions, setGeneratingSessions] = useState(false); // Loading state for auto-generate sessions
+  const [deletingSessions, setDeletingSessions] = useState(false); // Loading state for delete sessions
+
+  // State for makeup confirm dialog (Phase 4)
+  const [showMakeupConfirm, setShowMakeupConfirm] = useState(false);
+  const [pendingSaveData, setPendingSaveData] = useState<PendingAttendanceSave | null>(null);
+
+  // Bug 3 fix: Track session IDs that have attendance records
+  const [completedSessionIds, setCompletedSessionIds] = useState<Set<string>>(new Set());
+  const [completedDates, setCompletedDates] = useState<Set<string>>(new Set());
+
+  // Review tab state
+  const [reviewDate, setReviewDate] = useState<string>(() => {
+    const p = searchParams.get('reviewDate');
+    if (isValidDateParam(p)) return p as string;
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    return yesterday.toISOString().split('T')[0];
+  });
+  const [reviewFilterClass, setReviewFilterClass] = useState<string>('');
+  const [reviewFilterBranch, setReviewFilterBranch] = useState<string>(''); // Bug 4 fix: Add branch filter
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const [sessionsWithUnmarked, setSessionsWithUnmarked] = useState<SessionWithUnmarked[]>([]);
+  const [reviewReasons, setReviewReasons] = useState<Record<string, string>>({});
+  const [confirmDialog, setConfirmDialog] = useState<{
+    show: boolean;
+    type: 'late' | 'absent' | 'reserved'; // Bug 4 fix: Add 'reserved' type
+    student: UnmarkedStudent | null;
+    reason: string;
+  }>({ show: false, type: 'late', student: null, reason: '' });
+  const [processingReview, setProcessingReview] = useState(false);
+
+  // Check if selected date is a holiday (for tab 1)
+  const selectedDateHoliday = useMemo(() => {
+    return getHolidayForDate(attendanceDate, selectedClassId);
+  }, [attendanceDate, selectedClassId, holidays]);
+
+  // Check if review date is a global holiday (for tab 2)
+  const reviewDateHoliday = useMemo(() => {
+    return getHolidayForDate(reviewDate);
+  }, [reviewDate, holidays]);
+
+  // Get selected class info for sessions hook (needed for addMakeup when no sessions exist)
+  const selectedClassForSessions = useMemo(() => {
+    return classes.find(c => c.id === selectedClassId);
+  }, [classes, selectedClassId]);
+
+  // Sessions hook
+  const { sessions: allSessions, upcomingSessions, loading: sessionsLoading, markSessionComplete, addMakeup, refresh: refreshSessions } = useSessions({
+    classId: selectedClassId,
+    classInfo: selectedClassForSessions ? {
+      name: selectedClassForSessions.name,
+      teacherId: selectedClassForSessions.teacherId,
+      teacherName: selectedClassForSessions.teacher,
+      room: selectedClassForSessions.room,
+    } : undefined
+  });
+
+  /** C├╣ng mß╗Öt ng├áy c├│ >1 document classSessions ΓåÆ dropdown tr├╣ng chß╗»; th├¬m hß║¡u tß╗æ Buß╗òi N ─æß╗â ph├ón biß╗çt */
+  const sessionDatesWithDuplicates = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of allSessions) {
+      if (s.sessionNumber <= 0 || !s.date) continue;
+      counts.set(s.date, (counts.get(s.date) || 0) + 1);
+    }
+    const dups = new Set<string>();
+    counts.forEach((n, date) => {
+      if (n > 1) dups.add(date);
+    });
+    return dups;
+  }, [allSessions]);
+
+  // Persist key filters to URL so refresh doesn't lose context
+  useEffect(() => {
+    // Use functional update so we don't depend on the `searchParams` object in deps
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+
+      const setOrDelete = (k: string, v: string | null | undefined) => {
+        if (v) next.set(k, v);
+        else next.delete(k);
+      };
+
+      setOrDelete('tab', activeTab);
+      setOrDelete('classId', selectedClassId || null);
+      setOrDelete('date', attendanceDate || null);
+      setOrDelete('mode', useSessionMode ? 'session' : 'manual');
+      setOrDelete('reviewDate', reviewDate || null);
+
+      // Note: sessionId is managed in its own effect (depends on selectedSession)
+
+      return next;
+    }, { replace: true });
+  }, [activeTab, selectedClassId, attendanceDate, useSessionMode, reviewDate, setSearchParams]);
+
+  // Persist selected session to URL (and restore on refresh)
+  useEffect(() => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      if (selectedSession?.id) next.set('sessionId', selectedSession.id);
+      else next.delete('sessionId');
+      return next;
+    }, { replace: true });
+  }, [selectedSession?.id, setSearchParams]);
+
+  // Auto-restore selected session from URL OR by matching date
+  useEffect(() => {
+    if (!useSessionMode) return;
+    if (!selectedClassId) return;
+    if (sessionsLoading) return;
+    if (allSessions.length === 0) return;
+    if (selectedSession) return;
+
+    const sessionIdParam = searchParams.get('sessionId');
+    const fromParam = sessionIdParam ? allSessions.find(s => s.id === sessionIdParam) : undefined;
+    if (fromParam) {
+      setSelectedSession(fromParam);
+      if (fromParam.date && fromParam.date !== attendanceDate) {
+        setAttendanceDate(fromParam.date);
+      }
+      return;
+    }
+
+    if (!attendanceDate) return;
+    const matching = allSessions.find(s => s.date === attendanceDate);
+    if (!matching) return;
+
+    // Don't auto-select sessions that already have attendance
+    const hasAttendance =
+      completedSessionIds.has(matching.id) ||
+      completedDates.has(matching.date) ||
+      !!matching.attendanceId;
+    if (hasAttendance) return;
+
+    setSelectedSession(matching);
+  }, [
+    useSessionMode,
+    selectedClassId,
+    sessionsLoading,
+    allSessions,
+    selectedSession,
+    searchParams.get('sessionId'),
+    attendanceDate,
+    completedSessionIds,
+    completedDates,
+  ]);
+
+  // Close dropdown on page scroll or resize (but NOT when scrolling inside dropdown)
+  const handlePageScroll = useCallback((e: Event) => {
+    // Ignore scroll events from inside the dropdown panel
+    if (dropdownPanelRef.current?.contains(e.target as Node)) return;
+    setSessionDropdownOpen(false);
+  }, []);
+  useEffect(() => {
+    if (!sessionDropdownOpen) return;
+    window.addEventListener('scroll', handlePageScroll, true);
+    window.addEventListener('resize', () => setSessionDropdownOpen(false));
+    return () => {
+      window.removeEventListener('scroll', handlePageScroll, true);
+      window.removeEventListener('resize', () => setSessionDropdownOpen(false));
+    };
+  }, [sessionDropdownOpen, handlePageScroll]);
+
+  // Close dropdown when class changes
+  useEffect(() => {
+    setSessionDropdownOpen(false);
+  }, [selectedClassId]);
+
+  useEffect(() => {
+    if (!selectedClassId) {
+      setCompletedSessionIds(new Set());
+      setCompletedDates(new Set());
+      return;
+    }
+
+    const attendanceQuery = query(
+      collection(db, 'attendance'),
+      where('classId', '==', selectedClassId)
+    );
+
+    // Use onSnapshot for realtime updates to avoid race condition
+    const unsubscribe = onSnapshot(
+      attendanceQuery,
+      (snapshot) => {
+        const completedIds = new Set<string>();
+        const completedDateSet = new Set<string>();
+        snapshot.docs.forEach(doc => {
+          const data = doc.data();
+          // Track by sessionId if available
+          if (data.sessionId) {
+            completedIds.add(data.sessionId);
+          }
+          // Also track by date for legacy records without sessionId
+          if (data.date) {
+            completedDateSet.add(data.date);
+          }
+        });
+        setCompletedSessionIds(completedIds);
+        setCompletedDates(completedDateSet);
+      },
+      (error) => {
+        console.error('Error listening to completed sessions:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [selectedClassId]);
+
+  // Get students for selected class - only show students eligible for attendance
+  // Eligible statuses: ─Éang hß╗ìc, ─É├ú hß╗ìc hß║┐t ph├¡, Nß╗ú ph├¡ (exclude: Nghß╗ë hß╗ìc, Bß║úo l╞░u, Hß╗ìc thß╗¡, Nß╗ú hß╗úp ─æß╗ông)
+  const ATTENDANCE_ELIGIBLE_STATUSES = [StudentStatus.ACTIVE, StudentStatus.EXPIRED_FEE, StudentStatus.DEBT];
+  const selectedClass = classes.find(c => c.id === selectedClassId);
+  const classStudents = useMemo(() => {
+    return allStudents.filter(s => 
+      (s.classId === selectedClassId || 
+      s.class === selectedClass?.name ||
+      s.className === selectedClass?.name ||
+      (s.classIds && s.classIds.includes(selectedClassId))) &&
+      ATTENDANCE_ELIGIBLE_STATUSES.includes(s.status as StudentStatus)
+    );
+  }, [allStudents, selectedClassId, selectedClass?.name]);
+
+  // Check if selected date is valid for class schedule
+  const isValidScheduleDay = useMemo(() => {
+    if (!selectedClass?.schedule || !attendanceDate) return true; // Allow if no schedule defined
+    
+    // Parse date using local timezone to avoid UTC issues
+    const [year, month, day] = attendanceDate.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
+    
+    const schedule = selectedClass.schedule.toLowerCase();
+    
+    // Map Vietnamese day names to day numbers
+    const dayMap: Record<string, number[]> = {
+      'chß╗º nhß║¡t': [0],
+      'thß╗⌐ 2': [1], 'thß╗⌐ hai': [1], 't2': [1],
+      'thß╗⌐ 3': [2], 'thß╗⌐ ba': [2], 't3': [2],
+      'thß╗⌐ 4': [3], 'thß╗⌐ t╞░': [3], 't4': [3],
+      'thß╗⌐ 5': [4], 'thß╗⌐ n─âm': [4], 't5': [4],
+      'thß╗⌐ 6': [5], 'thß╗⌐ s├íu': [5], 't6': [5],
+      'thß╗⌐ 7': [6], 'thß╗⌐ bß║úy': [6], 't7': [6],
+    };
+    
+    // Find which days are in the schedule
+    const scheduleDays: number[] = [];
+    for (const [dayName, dayNums] of Object.entries(dayMap)) {
+      if (schedule.includes(dayName)) {
+        scheduleDays.push(...dayNums);
+      }
+    }
+    
+    // Also check for "2, 4, 6" or "3, 5, 7" format
+    if (schedule.match(/\b2\b/)) scheduleDays.push(1);
+    if (schedule.match(/\b3\b/)) scheduleDays.push(2);
+    if (schedule.match(/\b4\b/)) scheduleDays.push(3);
+    if (schedule.match(/\b5\b/)) scheduleDays.push(4);
+    if (schedule.match(/\b6\b/)) scheduleDays.push(5);
+    if (schedule.match(/\b7\b/)) scheduleDays.push(6);
+    
+    // If no days found, allow any day
+    if (scheduleDays.length === 0) return true;
+    
+    return scheduleDays.includes(dayOfWeek);
+  }, [selectedClass?.schedule, attendanceDate]);
+
+  // Initialize attendance data when class/date changes
+  useEffect(() => {
+    setIsResetting(false); // Clear reset flag on class/date change
+    if (!selectedClassId || classStudents.length === 0) {
+      setAttendanceData([]);
+      setExistingRecord(null);
+      return;
+    }
+
+    const initData = async () => {
+      // Check if attendance exists
+      const existing = await checkExisting(selectedClassId, attendanceDate);
+      setExistingRecord(existing);
+
+      if (existing) {
+        // Load existing attendance
+        await loadStudentAttendance(existing.id);
+      } else {
+        // Initialize empty attendance
+        setAttendanceData(
+          classStudents.map(s => ({
+            studentId: s.id,
+            studentName: s.fullName || (s as any).name || 'Unknown',
+            studentCode: s.code || s.id.slice(0, 6),
+            status: AttendanceStatus.PENDING,
+            note: '',
+            homeworkCompletion: undefined,
+            testName: '',
+            score: undefined,
+            bonusPoints: undefined,
+            punctuality: '',
+          }))
+        );
+      }
+    };
+
+    initData();
+  }, [selectedClassId, attendanceDate, classStudents.length]);
+
+  // Create stable reference for classStudents IDs to avoid infinite loop
+  const classStudentIds = useMemo(() => 
+    classStudents.map(s => s.id).sort().join(','), 
+    [classStudents]
+  );
+  
+  // Create stable reference for studentAttendance to avoid infinite loop
+  const studentAttendanceKey = useMemo(() => {
+    if (studentAttendance.length === 0) return '';
+    return studentAttendance.map(sa => 
+      `${sa.studentId}:${sa.status || ''}:${sa.note || ''}`
+    ).sort().join('|');
+  }, [studentAttendance]);
+  
+  // Sync with loaded student attendance - only show students in current filtered classStudents
+  useEffect(() => {
+    if (isResetting) return; // Skip sync when user is resetting the form
+    if (studentAttendance.length > 0 && existingRecord && classStudents.length > 0) {
+      const newAttendanceData = classStudents.map(s => {
+        const existing = studentAttendance.find(sa => sa.studentId === s.id);
+        return {
+          studentId: s.id,
+          studentName: s.fullName || (s as any).name || 'Unknown',
+          studentCode: s.code || s.id.slice(0, 6),
+          status: existing?.status || AttendanceStatus.PENDING,
+          note: existing?.note || '',
+          homeworkCompletion: existing?.homeworkCompletion,
+          testName: existing?.testName || '',
+          score: existing?.score,
+          bonusPoints: existing?.bonusPoints,
+          punctuality: existing?.punctuality || '',
+        };
+      });
+      
+      // Only update if data actually changed to prevent infinite loop
+      setAttendanceData(prev => {
+        // Check if data is actually different
+        if (prev.length !== newAttendanceData.length) {
+          return newAttendanceData;
+        }
+        
+        const hasChanged = prev.some((p, i) => {
+          const n = newAttendanceData[i];
+          return !n || 
+            p.studentId !== n.studentId ||
+            p.status !== n.status ||
+            p.note !== n.note ||
+            p.homeworkCompletion !== n.homeworkCompletion ||
+            p.testName !== n.testName ||
+            p.score !== n.score ||
+            p.bonusPoints !== n.bonusPoints ||
+            p.punctuality !== n.punctuality;
+        });
+        
+        return hasChanged ? newAttendanceData : prev;
+      });
+    }
+  }, [studentAttendanceKey, existingRecord?.id, classStudentIds, isResetting]);
+
+  const handleStatusChange = (studentId: string, status: AttendanceStatus) => {
+    setAttendanceData(prev =>
+      prev.map(s => (s.studentId === studentId ? { ...s, status } : s))
+    );
+  };
+
+  const handleNoteChange = (studentId: string, note: string) => {
+    setAttendanceData(prev =>
+      prev.map(s => (s.studentId === studentId ? { ...s, note } : s))
+    );
+  };
+
+  const handleGradeChange = (studentId: string, field: keyof StudentAttendanceState, value: any) => {
+    setAttendanceData(prev =>
+      prev.map(s => (s.studentId === studentId ? { ...s, [field]: value } : s))
+    );
+  };
+
+  const handleBulkStatus = (status: AttendanceStatus) => {
+    setAttendanceData(prev => prev.map(s => ({ ...s, status })));
+  };
+
+  const handleSave = async () => {
+    if (!selectedClassId || attendanceData.length === 0) {
+      setMessage({ type: 'error', text: 'Vui l├▓ng chß╗ìn lß╗¢p v├á hß╗ìc sinh' });
+      return;
+    }
+
+    const selectedClass = classes.find(c => c.id === selectedClassId);
+    if (!selectedClass) return;
+    
+    // Check if at least one student has a status marked
+    const hasMarkedStudents = attendanceData.some(s => s.status && s.status !== '');
+    if (!hasMarkedStudents) {
+      setMessage({ type: 'error', text: 'Vui l├▓ng ─æ├ính dß║Ñu trß║íng th├íi cho ├¡t nhß║Ñt mß╗Öt hß╗ìc sinh tr╞░ß╗¢c khi l╞░u.' });
+      return;
+    }
+
+    // When in session mode, require a session to be selected
+    if (useSessionMode && !selectedSession) {
+      setMessage({
+        type: 'error',
+        text: 'Vui l├▓ng chß╗ìn buß╗òi hß╗ìc ─æß╗â ─æiß╗âm danh. Nß║┐u muß╗æn ─æiß╗âm danh ng├áy kh├íc, vui l├▓ng chuyß╗ân sang chß║┐ ─æß╗Ö "Chß╗ìn ng├áy".'
+      });
+      return;
+    }
+
+    // Use session date if in session mode, otherwise use manual date
+    // Ensure date is in YYYY-MM-DD format (local timezone)
+    let dateToUse = selectedSession?.date || attendanceDate;
+    
+    // Normalize date format to ensure it's YYYY-MM-DD
+    if (dateToUse) {
+      // If date contains time (ISO format), extract date part only
+      if (dateToUse.includes('T')) {
+        dateToUse = dateToUse.split('T')[0];
+      }
+      // Validate format is YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateToUse)) {
+        console.error('[Attendance] Invalid date format:', dateToUse);
+        setMessage({
+          type: 'error',
+          text: '─Éß╗ïnh dß║íng ng├áy kh├┤ng hß╗úp lß╗ç. Vui l├▓ng thß╗¡ lß║íi.'
+        });
+        setSaving(false);
+        return;
+      }
+    }
+    
+    // If in session mode but no session selected, try to find session for the date
+    let sessionToUse = selectedSession;
+    if (useSessionMode && !selectedSession && dateToUse) {
+      // Find session matching the date
+      const matchingSession = allSessions.find(s => s.date === dateToUse);
+      if (matchingSession) {
+        sessionToUse = matchingSession;
+        console.log('[Attendance] Auto-found session for date:', dateToUse, 'sessionId:', matchingSession.id);
+      } else {
+        console.warn('[Attendance] No session found for date:', dateToUse, 'in session mode');
+      }
+    }
+
+    // Block saving if date is not valid for schedule AND not previously completed (only when not in session mode)
+    if (!useSessionMode && !isValidScheduleDay && !completedDates.has(dateToUse)) {
+      setMessage({
+        type: 'error',
+        text: `Kh├┤ng thß╗â ─æiß╗âm danh: Ng├áy ${new Date(dateToUse).toLocaleDateString('vi-VN')} kh├┤ng nß║▒m trong lß╗ïch hß╗ìc cß╗ºa lß╗¢p. Chß╗ë c├│ thß╗â ─æiß╗âm danh v├áo c├íc ng├áy trong lß╗ïch hß╗ìc hoß║╖c c├íc ng├áy ─æ├ú ─æiß╗âm danh tr╞░ß╗¢c ─æ├│.`
+      });
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setIsResetting(false); // Allow sync useEffect after save
+      setMessage(null);
+
+      // Check duplicate BEFORE saving (prevent race condition)
+      const duplicateCheck = await checkExisting(selectedClassId, dateToUse);
+      if (duplicateCheck && duplicateCheck.id !== existingRecord?.id) {
+        // Different record exists for same class + date - block save
+        setMessage({
+          type: 'error',
+          text: `Lß╗¢p ${selectedClass.name} ─æ├ú ─æ╞░ß╗úc ─æiß╗âm danh ng├áy ${dateToUse}. Vui l├▓ng chß╗ìn ng├áy kh├íc hoß║╖c chß╗ënh sß╗¡a bß║ún ghi hiß╗çn c├│.`
+        });
+        setSaving(false);
+        return;
+      }
+
+      // Phase 4: Check if this is non-session attendance
+      if (!selectedSession && !useSessionMode) {
+        // Check if class has sessions (either generated or existing)
+        const hasExistingSessions = allSessions.length > 0;
+
+        if (hasExistingSessions) {
+          // Class has sessions but user is saving without selecting one
+          // Store pending data and show confirm dialog
+          setPendingSaveData({
+            classId: selectedClassId,
+            className: selectedClass.name,
+            date: dateToUse,
+            attendanceData: [...attendanceData],
+          });
+          setShowMakeupConfirm(true);
+          setSaving(false);
+          return;
+        }
+        // If class has no sessions ΓåÆ will save as 'manual' type below
+      }
+
+      const absentCount = attendanceData.filter(s => s.status === AttendanceStatus.ABSENT).length;
+
+      // Use the found session (either selected or auto-found)
+      const finalSession = sessionToUse || selectedSession;
+      
+      console.log('[Attendance] Saving attendance:', {
+        useSessionMode,
+        hasSelectedSession: !!selectedSession,
+        hasFinalSession: !!finalSession,
+        sessionId: finalSession?.id || null,
+        sessionNumber: finalSession?.sessionNumber || null,
+        date: dateToUse,
+        studentsCount: attendanceData.length
+      });
+
+      const attendanceId = await saveAttendance(
+        {
+          classId: selectedClassId,
+          className: selectedClass.name,
+          date: dateToUse,
+          // Use null instead of undefined - Firestore doesn't accept undefined values
+          sessionNumber: finalSession?.sessionNumber ?? null,
+          sessionId: finalSession?.id ?? null,
+          totalStudents: attendanceData.length,
+          present: attendanceData.filter(s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE).length,
+          absent: absentCount,
+          reserved: attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
+          tutored: attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+          status: '─É├ú ─æiß╗âm danh',
+          createdBy: user?.uid ?? null,
+        },
+        attendanceData.map(s => ({
+          studentId: s.studentId,
+          studentName: s.studentName,
+          studentCode: s.studentCode,
+          status: s.status,
+          note: s.note,
+          homeworkCompletion: s.homeworkCompletion,
+          testName: s.testName,
+          score: s.score,
+          bonusPoints: s.bonusPoints,
+          punctuality: s.punctuality,
+          isLate: s.punctuality === 'late',
+        }))
+      );
+
+      // Mark session as complete when attendance is saved (regardless of pending students)
+      // Fix: allStudentsMarked check removed - session should be marked complete once attendance saved
+      // Use finalSession (either selected or auto-found) instead of selectedSession
+      if (finalSession?.id && attendanceId) {
+        try {
+          await markSessionComplete(finalSession.id, attendanceId);
+          console.log('[Attendance] Marked session complete:', finalSession.id);
+        } catch (err) {
+          console.warn('Could not mark session complete:', err);
+          // Don't block attendance save if session update fails
+        }
+      } else if (!finalSession?.id && useSessionMode) {
+        console.warn('[Attendance] No session ID to mark complete. useSessionMode:', useSessionMode, 'selectedSession:', !!selectedSession, 'dateToUse:', dateToUse, 'allSessions:', allSessions.length);
+      }
+
+      setMessage({
+        type: 'success',
+        text: absentCount > 0
+          ? `L╞░u th├ánh c├┤ng! ─É├ú tß║ío ${absentCount} lß╗ïch bß╗ôi b├ái cho hß╗ìc sinh vß║»ng.`
+          : 'L╞░u ─æiß╗âm danh th├ánh c├┤ng!',
+      });
+
+      // Reset selection
+      setSelectedSession(null);
+    } catch (error) {
+      console.error('[Attendance] Save error:', error);
+      let errorMessage = 'Kh├┤ng thß╗â l╞░u ─æiß╗âm danh. Vui l├▓ng thß╗¡ lß║íi.';
+      
+      if (error instanceof Error) {
+        errorMessage = error.message;
+        // Log full error details for debugging
+        console.error('[Attendance] Error details:', {
+          message: error.message,
+          stack: error.stack,
+          name: error.name
+        });
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      } else if (error && typeof error === 'object') {
+        // Try to extract meaningful error message
+        const err = error as any;
+        if (err.message) errorMessage = err.message;
+        else if (err.code) errorMessage = `Lß╗ùi ${err.code}: ${err.message || 'Kh├┤ng thß╗â l╞░u ─æiß╗âm danh'}`;
+        console.error('[Attendance] Error object:', err);
+      }
+      
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Phase 4: Save with specific attendance type (for makeup/manual attendance)
+  const saveWithType = async (type: 'makeup' | 'manual') => {
+    if (!pendingSaveData) return;
+
+    // Validate type parameter
+    if (type !== 'makeup' && type !== 'manual') {
+      console.error('[Attendance] Invalid attendance type:', type);
+      setMessage({ type: 'error', text: 'Loß║íi ─æiß╗âm danh kh├┤ng hß╗úp lß╗ç' });
+      return;
+    }
+
+    setSaving(true);
+    setShowMakeupConfirm(false);
+
+    try {
+      const absentCount = pendingSaveData.attendanceData.filter(
+        s => s.status === AttendanceStatus.ABSENT
+      ).length;
+
+      await saveAttendance(
+        {
+          classId: pendingSaveData.classId,
+          className: pendingSaveData.className,
+          date: pendingSaveData.date,
+          sessionNumber: null, // No session selected
+          sessionId: null,
+          attendanceType: type, // 'makeup' or 'manual'
+          totalStudents: pendingSaveData.attendanceData.length,
+          present: pendingSaveData.attendanceData.filter(
+            s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE
+          ).length,
+          absent: absentCount,
+          reserved: pendingSaveData.attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
+          tutored: pendingSaveData.attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+          status: '─É├ú ─æiß╗âm danh',
+          createdBy: user?.uid ?? null,
+        },
+        pendingSaveData.attendanceData.map(s => ({
+          studentId: s.studentId,
+          studentName: s.studentName,
+          studentCode: s.studentCode,
+          status: s.status,
+          note: s.note,
+          homeworkCompletion: s.homeworkCompletion,
+          testName: s.testName,
+          score: s.score,
+          bonusPoints: s.bonusPoints,
+          punctuality: s.punctuality,
+          isLate: s.punctuality === 'late',
+        }))
+      );
+
+      setMessage({
+        type: 'success',
+        text: type === 'makeup'
+          ? `─É├ú l╞░u ─æiß╗âm danh hß╗ìc b├╣!${absentCount > 0 ? ` ─É├ú tß║ío ${absentCount} lß╗ïch bß╗ôi b├ái.` : ''}`
+          : 'L╞░u ─æiß╗âm danh th├ánh c├┤ng!',
+      });
+
+      setPendingSaveData(null);
+    } catch (error) {
+      console.error('[Attendance] SaveWithType error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Kh├┤ng thß╗â l╞░u ─æiß╗âm danh. Vui l├▓ng thß╗¡ lß║íi.';
+      setMessage({ type: 'error', text: errorMessage });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Handle session selection
+  const handleSelectSession = (session: ClassSession) => {
+    setSelectedSession(session);
+    setAttendanceDate(session.date);
+  };
+
+  // Auto-generate sessions for class if missing
+  const handleAutoGenerateSessions = async () => {
+    if (!selectedClass) {
+      setMessage({ type: 'error', text: 'Vui l├▓ng chß╗ìn lß╗¢p tr╞░ß╗¢c' });
+      return;
+    }
+
+    if (!selectedClass.schedule) {
+      setMessage({ type: 'error', text: 'Lß╗¢p n├áy ch╞░a c├│ lß╗ïch hß╗ìc. Vui l├▓ng cß║¡p nhß║¡t lß╗ïch hß╗ìc tr╞░ß╗¢c.' });
+      return;
+    }
+
+    try {
+      setGeneratingSessions(true);
+      setMessage(null);
+
+      // Use class startDate and endDate to create sessions for the entire course
+      if (!selectedClass.startDate) {
+        setMessage({ 
+          type: 'error', 
+          text: 'Lß╗¢p n├áy ch╞░a c├│ ng├áy bß║»t ─æß║ºu. Vui l├▓ng cß║¡p nhß║¡t ng├áy bß║»t ─æß║ºu kh├│a hß╗ìc tr╞░ß╗¢c.' 
+        });
+        return;
+      }
+
+      // Helper to parse date string using local timezone (avoid UTC parsing issues)
+      const parseLocalDate = (dateStr: string): Date => {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        return new Date(year, month - 1, day);
+      };
+      
+      // Determine start date for generation
+      let fromDate: Date;
+      if (selectedClass.endDate) {
+        // If has endDate, always start from class startDate
+        fromDate = parseLocalDate(selectedClass.startDate);
+      } else {
+        // If no endDate, start from the last session date + 1 day, or from startDate if no sessions exist
+        if (allSessions.length > 0) {
+          // Find the latest session date
+          const lastSessionDate = allSessions.reduce((latest, session) => {
+            return session.date > latest ? session.date : latest;
+          }, allSessions[0].date);
+          
+          // Start from the day after the last session
+          fromDate = parseLocalDate(lastSessionDate);
+          fromDate.setDate(fromDate.getDate() + 1);
+        } else {
+          // No sessions exist, start from class startDate
+          fromDate = parseLocalDate(selectedClass.startDate);
+        }
+      }
+      fromDate.setHours(0, 0, 0, 0); // Reset to start of day
+      
+      // Determine end date
+      let toDate: Date;
+      if (selectedClass.endDate) {
+        // If has endDate, use it
+        toDate = parseLocalDate(selectedClass.endDate);
+      } else {
+        // If no endDate, add 30 days from fromDate (incremental generation)
+        toDate = new Date(fromDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+      }
+      
+      // Use totalSessions if available, otherwise calculate based on date range
+      // If no endDate, don't limit by totalSessions (allow incremental generation)
+      const maxSessions = selectedClass.endDate && selectedClass.totalSessions && selectedClass.totalSessions > 0
+        ? selectedClass.totalSessions
+        : 50; // Default to 50 sessions per generation if no endDate or totalSessions
+
+      // Helper to format date to YYYY-MM-DD using local date
+      const formatLocalDate = (date: Date): string => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+      
+      // Generate sessions based on class schedule
+      const generatedSessions = await generateSessionsForClass({
+        id: selectedClass.id,
+        name: selectedClass.name,
+        schedule: selectedClass.schedule,
+        startDate: formatLocalDate(fromDate),
+        endDate: selectedClass.endDate,
+        room: selectedClass.room,
+        teacherId: selectedClass.teacherId,
+        teacherName: selectedClass.teacher,
+        totalSessions: selectedClass.totalSessions,
+      }, {
+        fromDate,
+        toDate,
+        maxSessions,
+      });
+
+      if (generatedSessions.length === 0) {
+        setMessage({ 
+          type: 'error', 
+          text: 'Kh├┤ng thß╗â tß║ío buß╗òi hß╗ìc. Vui l├▓ng kiß╗âm tra lß║íi lß╗ïch hß╗ìc v├á sß╗æ buß╗òi hß╗ìc cß╗ºa lß╗¢p.' 
+        });
+        return;
+      }
+
+      // Filter out sessions that already exist (by date)
+      const existingDates = new Set(allSessions.map(s => s.date));
+      const newSessions = generatedSessions.filter(s => !existingDates.has(s.date));
+
+      if (newSessions.length === 0) {
+        if (selectedClass.endDate) {
+          setMessage({ 
+            type: 'info', 
+            text: 'Tß║Ñt cß║ú c├íc buß╗òi hß╗ìc tß╗½ ng├áy bß║»t ─æß║ºu ─æß║┐n ng├áy kß║┐t th├║c ─æ├ú ─æ╞░ß╗úc tß║ío. Kh├┤ng c├│ buß╗òi hß╗ìc mß╗¢i n├áo cß║ºn tß║ío.' 
+          });
+        } else {
+          setMessage({ 
+            type: 'info', 
+            text: 'Kh├┤ng c├│ buß╗òi hß╗ìc mß╗¢i trong 30 ng├áy tiß║┐p theo. Bß║ín c├│ thß╗â bß║Ñm lß║íi ─æß╗â tß║ío th├¬m 30 ng├áy nß╗»a.' 
+          });
+        }
+        return;
+      }
+
+      // Save to Firestore
+      const savedCount = await saveSessionsToFirestore(newSessions);
+      
+      // Renumber all sessions by date to ensure unique sequential sessionNumbers
+      try {
+        const renumberedCount = await renumberSessionsByDate(selectedClassId);
+        if (renumberedCount > 0) {
+          console.log(`[Attendance] Renumbered ${renumberedCount} sessions`);
+        }
+      } catch (error) {
+        console.warn('[Attendance] Error renumbering sessions:', error);
+        // Don't block success message if renumbering fails
+      }
+      
+      const dateRange = selectedClass.endDate 
+        ? `tß╗½ ${new Date(selectedClass.startDate).toLocaleDateString('vi-VN')} ─æß║┐n ${new Date(selectedClass.endDate).toLocaleDateString('vi-VN')}`
+        : `trong 30 ng├áy tiß║┐p theo (tß╗½ ${fromDate.toLocaleDateString('vi-VN')} ─æß║┐n ${toDate.toLocaleDateString('vi-VN')})`;
+      
+      setMessage({ 
+        type: 'success', 
+        text: `─É├ú tß║ío ${savedCount} buß╗òi hß╗ìc ${dateRange}.${!selectedClass.endDate ? ' Bß║ín c├│ thß╗â bß║Ñm lß║íi ─æß╗â tß║ío th├¬m 30 ng├áy nß╗»a.' : ''}` 
+      });
+
+      // Refresh sessions after a short delay to allow Firestore to update
+      setTimeout(() => {
+        if (refreshSessions) {
+          refreshSessions();
+        }
+      }, 1500);
+
+    } catch (error) {
+      console.error('[Attendance] Error auto-generating sessions:', error);
+      setMessage({ 
+        type: 'error', 
+        text: `Lß╗ùi khi tß║ío buß╗òi hß╗ìc: ${error instanceof Error ? error.message : 'Lß╗ùi kh├┤ng x├íc ─æß╗ïnh'}` 
+      });
+    } finally {
+      setGeneratingSessions(false);
+    }
+  };
+
+  // Delete all sessions for the class
+  const handleDeleteAllSessions = async () => {
+    if (!selectedClassId || !selectedClass) {
+      setMessage({ type: 'error', text: 'Vui l├▓ng chß╗ìn lß╗¢p tr╞░ß╗¢c' });
+      return;
+    }
+
+    if (allSessions.length === 0) {
+      setMessage({ type: 'info', text: 'Lß╗¢p n├áy ch╞░a c├│ buß╗òi hß╗ìc n├áo ─æß╗â x├│a.' });
+      return;
+    }
+
+    // Confirm before deleting
+    const confirmed = window.confirm(
+      `Bß║ín c├│ chß║»c chß║»n muß╗æn x├│a Tß║ñT Cß║ó ${allSessions.length} buß╗òi hß╗ìc cß╗ºa lß╗¢p "${selectedClass.name}"?\n\n` +
+      'H├ánh ─æß╗Öng n├áy kh├┤ng thß╗â ho├án t├íc!'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setDeletingSessions(true);
+      setMessage(null);
+
+      const deletedCount = await deleteSessionsByClass(selectedClassId);
+      
+      setMessage({ 
+        type: 'success', 
+        text: `─É├ú x├│a ${deletedCount} buß╗òi hß╗ìc cß╗ºa lß╗¢p "${selectedClass.name}".` 
+      });
+
+      // Clear selected session if it was deleted
+      setSelectedSession(null);
+
+      // Refresh sessions after a short delay
+      setTimeout(() => {
+        if (refreshSessions) {
+          refreshSessions();
+        }
+      }, 1000);
+
+    } catch (error) {
+      console.error('[Attendance] Error deleting sessions:', error);
+      setMessage({ 
+        type: 'error', 
+        text: `Lß╗ùi khi x├│a buß╗òi hß╗ìc: ${error instanceof Error ? error.message : 'Lß╗ùi kh├┤ng x├íc ─æß╗ïnh'}` 
+      });
+    } finally {
+      setDeletingSessions(false);
+    }
+  };
+
+  // Phase 1: Handle date change with auto-detect session logic
+  const handleDateChange = (newDate: string) => {
+    setAttendanceDate(newDate);
+
+    // Skip auto-detect if sessions still loading
+    if (sessionsLoading) {
+      setSelectedSession(null);
+      return;
+    }
+
+    // Auto-detect: Find session matching this date
+    const matchingSession = allSessions.find(s => s.date === newDate);
+
+    if (matchingSession) {
+      // Check if session already has attendance
+      const hasAttendance = completedSessionIds.has(matchingSession.id) ||
+                           completedDates.has(matchingSession.date) ||
+                           matchingSession.attendanceId;
+
+      if (hasAttendance) {
+        // Phase 1.2: Warning - session already has attendance
+        setMessage({
+          type: 'error',
+          text: `Buß╗òi ${matchingSession.sessionNumber} (${matchingSession.dayOfWeek}) ─æ├ú ─æ╞░ß╗úc ─æiß╗âm danh. Vui l├▓ng chß╗ìn buß╗òi kh├íc hoß║╖c chß╗ënh sß╗¡a bß║ún ghi hiß╗çn c├│.`
+        });
+        setSelectedSession(null);
+      } else {
+        // Phase 1.1: Auto-link - select the matching session
+        setSelectedSession(matchingSession);
+        setMessage({
+          type: 'success',
+          text: `─É├ú tß╗▒ ─æß╗Öng chß╗ìn Buß╗òi ${matchingSession.sessionNumber} (${matchingSession.dayOfWeek})`
+        });
+      }
+    } else {
+      // No matching session - clear selection (will trigger makeup confirm on save)
+      setSelectedSession(null);
+      setMessage(null);
+    }
+  };
+
+  const getStatusStyle = (status: AttendanceStatus, current: AttendanceStatus) => {
+    const isActive = status === current && status !== AttendanceStatus.PENDING;
+    const styles: Record<string, string> = {
+      [AttendanceStatus.PENDING]: 'bg-white text-gray-400 border-gray-200',
+      [AttendanceStatus.ON_TIME]: isActive
+        ? 'bg-green-600 text-white border-green-600'
+        : 'bg-white text-green-600 border-green-300 hover:bg-green-50',
+      [AttendanceStatus.LATE]: isActive
+        ? 'bg-yellow-500 text-white border-yellow-500'
+        : 'bg-white text-yellow-600 border-yellow-300 hover:bg-yellow-50',
+      [AttendanceStatus.ABSENT]: isActive
+        ? 'bg-red-600 text-white border-red-600'
+        : 'bg-white text-red-600 border-red-300 hover:bg-red-50',
+      [AttendanceStatus.RESERVED]: isActive
+        ? 'bg-orange-500 text-white border-orange-500'
+        : 'bg-white text-orange-500 border-orange-300 hover:bg-orange-50',
+      [AttendanceStatus.TUTORED]: isActive
+        ? 'bg-blue-600 text-white border-blue-600'
+        : 'bg-white text-blue-600 border-blue-300 hover:bg-blue-50',
+    };
+    return styles[status] || styles[AttendanceStatus.PENDING];
+  };
+
+  // Stats
+  const stats = {
+    total: attendanceData.length,
+    pending: attendanceData.filter(s => s.status === AttendanceStatus.PENDING || !s.status).length,
+    present: attendanceData.filter(s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE).length,
+    absent: attendanceData.filter(s => s.status === AttendanceStatus.ABSENT).length,
+    reserved: attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
+    tutored: attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+  };
+
+  // ========== REVIEW TAB FUNCTIONS ==========
+  
+  // Helper: Check if a class has schedule on given date
+  const classHasScheduleOnDate = (classInfo: any, dateStr: string): boolean => {
+    if (!classInfo?.schedule) return false;
+    
+    // Parse date using local timezone to avoid UTC issues
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay(); // 0 = Sunday, 1 = Monday...
+    const schedule = classInfo.schedule.toLowerCase();
+    
+    // Map day numbers - more comprehensive patterns
+    const dayPatterns: Record<number, string[]> = {
+      0: ['chß╗º nhß║¡t', 'cn', 'sunday'],
+      1: ['thß╗⌐ 2', 'thß╗⌐ hai', 't2', 'th 2', 'monday'],
+      2: ['thß╗⌐ 3', 'thß╗⌐ ba', 't3', 'th 3', 'tuesday'],
+      3: ['thß╗⌐ 4', 'thß╗⌐ t╞░', 't4', 'th 4', 'wednesday'],
+      4: ['thß╗⌐ 5', 'thß╗⌐ n─âm', 't5', 'th 5', 'thursday'],
+      5: ['thß╗⌐ 6', 'thß╗⌐ s├íu', 't6', 'th 6', 'friday'],
+      6: ['thß╗⌐ 7', 'thß╗⌐ bß║úy', 't7', 'th 7', 'saturday'],
+    };
+    
+    const patterns = dayPatterns[dayOfWeek] || [];
+    const hasSchedule = patterns.some(p => schedule.includes(p));
+    
+    // Also check for number patterns like "2, 4, 6" or "2-4-6"
+    const dayNumber = dayOfWeek === 0 ? 'cn' : String(dayOfWeek + 1); // Convert to Vietnamese day numbering (2-7, CN)
+    const numberPattern = new RegExp(`\\b${dayOfWeek === 0 ? '(cn|chß╗º nhß║¡t)' : (dayOfWeek + 1)}\\b`, 'i');
+    const hasNumberMatch = numberPattern.test(schedule);
+    
+    console.log('[Schedule Check]', classInfo.name, '| Date:', dateStr, '| DayOfWeek:', dayOfWeek, '| Schedule:', classInfo.schedule, '| Match:', hasSchedule || hasNumberMatch);
+    
+    return hasSchedule || hasNumberMatch;
+  };
+
+  // Load unmarked students for review tab - NEW LOGIC: Read from class schedule
+  const loadUnmarkedStudents = async () => {
+    if (allClasses.length === 0) return;
+    
+    setReviewLoading(true);
+    try {
+      // Debug: Show all classes and their schedules
+      console.log('[Review] All classes:', allClasses.length);
+      allClasses.forEach(c => {
+        console.log('[Review] Class:', c.name, '| Status:', c.status, '| Schedule:', c.schedule);
+      });
+      
+      // Step 1: Find all active classes that should have session on reviewDate
+      // Include more status variations: Active, ─Éang hß╗ìc, Chß╗¥ mß╗ƒ (exclude: Kß║┐t th├║c, ─É├ú hß╗ºy, ─É├ú kß║┐t th├║c)
+      const excludeStatuses = ['Kß║┐t th├║c', '─É├ú kß║┐t th├║c', '─É├ú hß╗ºy', 'Cancelled', 'Completed'];
+      const activeClasses = allClasses.filter(c => {
+        const isActive = !excludeStatuses.includes(c.status);
+        const hasSchedule = classHasScheduleOnDate(c, reviewDate);
+        console.log('[Review] Filter:', c.name, '| Status:', c.status, '| isActive:', isActive, '| hasSchedule:', hasSchedule);
+        return isActive && hasSchedule;
+      });
+      
+      console.log('[Review] Classes with schedule on', reviewDate, ':', activeClasses.map(c => c.name));
+      
+      // Step 2: Get existing sessions for this date
+      const sessionsSnap = await getDocs(
+        query(collection(db, 'classSessions'), where('date', '==', reviewDate))
+      );
+      const existingSessions = new Map<string, any>();
+      sessionsSnap.docs.forEach(doc => {
+        const data = doc.data();
+        existingSessions.set(data.classId, { id: doc.id, ...data });
+      });
+      
+      console.log('[Review] Existing sessions in DB:', existingSessions.size);
+      
+      const results: SessionWithUnmarked[] = [];
+      
+      // Step 3: Process each class that should have session
+      for (const classInfo of activeClasses) {
+        // Check if class is on holiday
+        const classHoliday = getHolidayForDate(reviewDate, classInfo.id);
+        if (classHoliday) {
+          console.log('[Review] Class:', classInfo.name, '- SKIPPED: Holiday -', classHoliday.name);
+          continue;
+        }
+        
+        const existingSession = existingSessions.get(classInfo.id);
+        const sessionId = existingSession?.id || `temp_${classInfo.id}_${reviewDate}`;
+        const sessionNumber = existingSession?.sessionNumber || 0;
+        
+        // Get students in this class - only include students eligible for attendance
+        // Eligible statuses: ─Éang hß╗ìc, ─É├ú hß╗ìc hß║┐t ph├¡, Nß╗ú ph├¡ (same as main attendance tab)
+        const allClassStudents = allStudents.filter(s => 
+          s.classId === classInfo.id || s.class === classInfo.name || s.className === classInfo.name
+        );
+        const studentsInClass = allClassStudents.filter(s => 
+          ATTENDANCE_ELIGIBLE_STATUSES.includes(s.status as StudentStatus)
+        );
+        
+        console.log('[Review] Class:', classInfo.name, '| All students:', allClassStudents.length, '| Active:', studentsInClass.length);
+        if (allClassStudents.length > 0) {
+          console.log('[Review] Student statuses:', [...new Set(allClassStudents.map(s => s.status))]);
+        }
+        
+        if (studentsInClass.length === 0) {
+          console.log('[Review] Class:', classInfo.name, '- SKIPPED: No active students');
+          continue;
+        }
+        
+        // Get attendance records - check by sessionId OR by classId+date
+        let markedStudentIds = new Set<string>();
+        
+        if (existingSession) {
+          const attendanceSnap = await getDocs(
+            query(collection(db, 'studentAttendance'), where('sessionId', '==', existingSession.id))
+          );
+          attendanceSnap.docs.forEach(doc => markedStudentIds.add(doc.data().studentId));
+        }
+        
+        // Also check by classId + date (for records without sessionId)
+        const attendanceByDateSnap = await getDocs(
+          query(
+            collection(db, 'studentAttendance'), 
+            where('classId', '==', classInfo.id),
+            where('date', '==', reviewDate)
+          )
+        );
+        attendanceByDateSnap.docs.forEach(doc => markedStudentIds.add(doc.data().studentId));
+        
+        console.log('[Review] Class:', classInfo.name, '- Students:', studentsInClass.length, '- Marked:', markedStudentIds.size, '- HasSession:', !!existingSession);
+        
+        // Find unmarked students
+        const unmarked: UnmarkedStudent[] = studentsInClass
+          .filter(s => !markedStudentIds.has(s.id))
+          .map(s => ({
+            id: `${sessionId}_${s.id}`,
+            sessionId,
+            sessionDate: reviewDate,
+            sessionNumber,
+            classId: classInfo.id,
+            className: classInfo.name,
+            studentId: s.id,
+            studentName: s.fullName || (s as any).name || 'Unknown'
+          }));
+        
+        if (unmarked.length > 0) {
+          results.push({
+            sessionId,
+            sessionDate: reviewDate,
+            sessionNumber,
+            classId: classInfo.id,
+            className: classInfo.name,
+            unmarkedStudents: unmarked
+          });
+        } else {
+          console.log('[Review] Class:', classInfo.name, '- SKIPPED: All students already marked');
+        }
+      }
+      
+      results.sort((a, b) => a.className.localeCompare(b.className));
+      setSessionsWithUnmarked(results);
+      
+    } catch (err) {
+      console.error('Error loading unmarked students:', err);
+    } finally {
+      setReviewLoading(false);
+    }
+  };
+
+  // Load when review date changes or tab switches
+  useEffect(() => {
+    if (activeTab === 'review') {
+      loadUnmarkedStudents();
+    }
+  }, [reviewDate, activeTab, allClasses.length, allStudents.length]);
+
+  // Filter sessions by class and branch - Bug 4 fix
+  const filteredReviewSessions = useMemo(() => {
+    let filtered = sessionsWithUnmarked;
+    if (reviewFilterClass) {
+      filtered = filtered.filter(s => s.classId === reviewFilterClass);
+    }
+    if (reviewFilterBranch) {
+      const classesInBranch = new Set(allClasses.filter(c => c.branch === reviewFilterBranch).map(c => c.id));
+      filtered = filtered.filter(s => classesInBranch.has(s.classId));
+    }
+    return filtered;
+  }, [sessionsWithUnmarked, reviewFilterClass, reviewFilterBranch, allClasses]);
+
+  // Total unmarked count
+  const totalUnmarked = useMemo(() => {
+    return filteredReviewSessions.reduce((sum, s) => sum + s.unmarkedStudents.length, 0);
+  }, [filteredReviewSessions]);
+
+  // Confirm attendance review
+  const handleReviewConfirm = async () => {
+    if (!confirmDialog.student) return;
+    
+    setProcessingReview(true);
+    try {
+      const student = confirmDialog.student;
+      const isLate = confirmDialog.type === 'late';
+      const isReserved = confirmDialog.type === 'reserved'; // Bug 4 fix
+      
+      let actualSessionId = student.sessionId;
+      
+      // If sessionId is temporary (starts with temp_), create a real session first
+      if (student.sessionId.startsWith('temp_')) {
+        const classInfo = allClasses.find(c => c.id === student.classId);
+
+        // Calculate correct sessionNumber by counting existing sessions for this class
+        const existingSessionsSnap = await getDocs(
+          query(collection(db, 'classSessions'), where('classId', '==', student.classId))
+        );
+        const maxSessionNumber = existingSessionsSnap.docs.reduce((max, doc) => {
+          const num = doc.data().sessionNumber || 0;
+          return num > max ? num : max;
+        }, 0);
+        const newSessionNumber = maxSessionNumber + 1;
+
+        const sessionDoc = await addDoc(collection(db, 'classSessions'), {
+          classId: student.classId,
+          className: student.className,
+          date: student.sessionDate,
+          sessionNumber: newSessionNumber,
+          status: 'Ch╞░a hß╗ìc',
+          dayOfWeek: new Date(student.sessionDate).toLocaleDateString('vi-VN', { weekday: 'long' }),
+          time: classInfo?.time || '',
+          room: classInfo?.room || '',
+          createdAt: new Date().toISOString(),
+          createdBy: staffData?.name || 'Lß╗à t├ón',
+          note: 'Tß║ío tß╗▒ ─æß╗Öng tß╗½ R├á so├ít ─æiß╗âm danh'
+        });
+        actualSessionId = sessionDoc.id;
+        console.log('[Review] Created new session:', actualSessionId, 'sessionNumber:', newSessionNumber);
+      }
+      
+      await addDoc(collection(db, 'studentAttendance'), {
+        sessionId: actualSessionId,
+        classId: student.classId,
+        className: student.className,
+        studentId: student.studentId,
+        studentName: student.studentName,
+        date: student.sessionDate,
+        sessionNumber: student.sessionNumber,
+        // Bug 4 fix: Support 'reserved' status
+        status: isLate ? '─Éi trß╗à' : isReserved ? 'Bß║úo l╞░u' : 'Vß║»ng',
+        note: confirmDialog.reason || (isLate ? '─Éß║┐n trß╗à - R├á so├ít ─æiß╗âm danh' : isReserved ? 'Bß║úo l╞░u - R├á so├ít ─æiß╗âm danh' : 'Nghß╗ë hß╗ìc - R├á so├ít ─æiß╗âm danh'),
+        checkedAt: new Date().toISOString(),
+        checkedBy: staffData?.name || 'Lß╗à t├ón',
+        isReviewed: true,
+        reviewedAt: new Date().toISOString()
+      });
+      
+      // Remove from list
+      setSessionsWithUnmarked(prev => prev.map(session => {
+        if (session.sessionId !== student.sessionId) return session;
+        return {
+          ...session,
+          unmarkedStudents: session.unmarkedStudents.filter(s => s.studentId !== student.studentId)
+        };
+      }).filter(s => s.unmarkedStudents.length > 0));
+      
+      // Clear reason
+      setReviewReasons(prev => {
+        const newReasons = { ...prev };
+        delete newReasons[student.id];
+        return newReasons;
+      });
+      
+      setConfirmDialog({ show: false, type: 'late', student: null, reason: '' });
+      
+    } catch (err) {
+      console.error('Error confirming attendance:', err);
+      alert('C├│ lß╗ùi xß║úy ra khi x├íc nhß║¡n!');
+    } finally {
+      setProcessingReview(false);
+    }
+  };
+
+  // Bug 4 fix: Support 'reserved' type
+  const openReviewConfirmDialog = (type: 'late' | 'absent' | 'reserved', student: UnmarkedStudent) => {
+    setConfirmDialog({
+      show: true,
+      type,
+      student,
+      reason: reviewReasons[student.id] || ''
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header with Tabs */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* Tab Header */}
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('attendance')}
+            className={`flex-1 px-6 py-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+              activeTab === 'attendance'
+                ? 'bg-indigo-50 text-indigo-700 border-b-2 border-indigo-600'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            <Users size={18} />
+            ─Éiß╗âm danh
+          </button>
+          <button
+            onClick={() => setActiveTab('review')}
+            className={`flex-1 px-6 py-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+              activeTab === 'review'
+                ? 'bg-amber-50 text-amber-700 border-b-2 border-amber-600'
+                : 'text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            <ClipboardCheck size={18} />
+            R├á so├ít ─æiß╗âm danh
+            {totalUnmarked > 0 && activeTab !== 'review' && (
+              <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full">{totalUnmarked}</span>
+            )}
+          </button>
+        </div>
+
+        {/* Attendance Tab Controls */}
+        {activeTab === 'attendance' && (
+          <div className="p-4">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">─Éiß╗âm danh lß╗¢p hß╗ìc</h2>
+                <p className="text-sm text-gray-500">5 trß║íng th├íi: ─É├║ng giß╗¥, Trß╗à giß╗¥, Vß║»ng, Bß║úo l╞░u, ─É├ú bß╗ôi</p>
+              </div>
+              <div className="flex flex-wrap gap-3 w-full md:w-auto">
+                {/* Searchable class dropdown with branch filter */}
+                <SearchableClassDropdown
+                  classes={classes}
+                  selectedClassId={selectedClassId}
+                  onSelect={(classId) => {
+                    setSelectedClassId(classId);
+                    setSelectedSession(null);
+                  }}
+                  disabled={classLoading}
+                  placeholder="T├¼m kiß║┐m lß╗¢p..."
+                />
+                
+                <div className="flex items-center bg-gray-100 rounded-lg p-1">
+                  <button
+                    onClick={() => setUseSessionMode(true)}
+                    className={`px-3 py-1 text-xs font-medium rounded ${
+                      useSessionMode ? 'bg-white shadow text-indigo-600' : 'text-gray-600'
+                    }`}
+                  >
+                    Buß╗òi hß╗ìc
+                  </button>
+                  <button
+                    onClick={() => {
+                      setUseSessionMode(false);
+                      setSelectedSession(null); // Reset session khi chuyß╗ân sang chß║┐ ─æß╗Ö chß╗ìn ng├áy
+                    }}
+                    className={`px-3 py-1 text-xs font-medium rounded ${
+                      !useSessionMode ? 'bg-white shadow text-indigo-600' : 'text-gray-600'
+                    }`}
+                  >
+                    Chß╗ìn ng├áy
+                  </button>
+                </div>
+
+                {useSessionMode ? (
+                  <div ref={sessionDropdownRef} className="relative">
+                    <button
+                      ref={sessionButtonRef}
+                      type="button"
+                      onClick={() => {
+                        if (selectedClassId && !sessionsLoading) {
+                          if (!sessionDropdownOpen && sessionButtonRef.current) {
+                            const rect = sessionButtonRef.current.getBoundingClientRect();
+                            // Calculate max height based on actual available space below button
+                            const availableSpace = window.innerHeight - rect.bottom - 12; // 12px padding from bottom
+                            setDropdownPos({ top: rect.bottom + 4, left: rect.left, width: rect.width, maxHeight: Math.max(200, availableSpace) });
+                          }
+                          setSessionDropdownOpen(!sessionDropdownOpen);
+                        }
+                      }}
+                      disabled={!selectedClassId || sessionsLoading}
+                      className="w-[420px] px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 flex items-center justify-between disabled:bg-gray-100"
+                    >
+                      <span className={`${selectedSession ? 'text-gray-900' : 'text-gray-500'} whitespace-nowrap overflow-hidden text-ellipsis`}>
+                        {selectedSession 
+                          ? (() => {
+                              const teacherName = selectedSession.teacherName || selectedClass?.teacher || '';
+                              const dateStr = new Date(selectedSession.date).toLocaleDateString('vi-VN');
+                              const timeStr = selectedSession.time || '';
+                              const dup =
+                                sessionDatesWithDuplicates.has(selectedSession.date)
+                                  ? ` ┬╖ Buß╗òi ${selectedSession.sessionNumber}`
+                                  : '';
+                              return teacherName 
+                                ? `GV: ${teacherName} - ${selectedSession.dayOfWeek} - ${dateStr}${timeStr ? ` (${timeStr})` : ''}${dup}`
+                                : `Buß╗òi ${selectedSession.sessionNumber} - ${dateStr} (${selectedSession.dayOfWeek})`;
+                            })()
+                          : '-- Chß╗ìn buß╗òi hß╗ìc --'
+                        }
+                      </span>
+                      <ChevronDown size={16} className="text-gray-400" />
+                    </button>
+                    
+                    {sessionDropdownOpen && createPortal(
+                      <>
+                        {/* Overlay to close on click outside */}
+                        <div className="fixed inset-0" style={{ zIndex: 99998 }} onClick={() => setSessionDropdownOpen(false)} />
+                        <div
+                          ref={dropdownPanelRef}
+                          style={{ position: 'fixed', top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width, maxHeight: dropdownPos.maxHeight, zIndex: 99999 }}
+                          className="bg-white border border-gray-300 rounded-lg shadow-2xl overflow-y-auto"
+                        >
+                        {[...allSessions]
+                          .filter(s => s.sessionNumber > 0) // Bug 2 fix: Filter out sessions with invalid sessionNumber
+                          .sort((a, b) => {
+                            // Sort by date descending (ng├áy lß╗¢n l├¬n tr╞░ß╗¢c)
+                            return b.date.localeCompare(a.date);
+                          })
+                          .map(s => {
+                          const today = new Date().toISOString().split('T')[0];
+                          const isPast = s.date < today;
+                          const isToday = s.date === today;
+                          // Check if session is a holiday (Cloud Function sets status='Nghß╗ë' + holidayId)
+                          const isHoliday = s.status === 'Nghß╗ë' || !!s.holidayId;
+                          // Fix: Check both session flags AND actual attendance existence
+                          const hasAttendanceRecord = completedSessionIds.has(s.id) ||
+                                                      (s.date && completedDates.has(s.date));
+                          const isCompleted = s.status === '─É├ú hß╗ìc' || !!s.attendanceId || hasAttendanceRecord;
+
+                          let bgClass = 'bg-white hover:bg-gray-50';
+                          let iconColor = '#9ca3af';
+                          let icon = 'Γùï';
+
+                          if (isHoliday) {
+                            bgClass = 'bg-purple-50 hover:bg-purple-100';
+                            iconColor = '#7c3aed';
+                            icon = 'Γèÿ';
+                          } else if (isCompleted) {
+                            bgClass = 'bg-green-50 hover:bg-green-100';
+                            iconColor = '#16a34a';
+                            icon = 'Γ£ô';
+                          } else if (isPast) {
+                            bgClass = 'bg-red-50 hover:bg-red-100';
+                            iconColor = '#dc2626';
+                            icon = 'Γ£ù';
+                          } else if (isToday) {
+                            bgClass = 'bg-yellow-50 hover:bg-yellow-100';
+                            iconColor = '#ca8a04';
+                            icon = 'ΓùÅ';
+                          }
+
+                          return (
+                            <div
+                              key={s.id}
+                              onClick={() => {
+                                handleSelectSession(s);
+                                setSessionDropdownOpen(false);
+                              }}
+                              className={`px-3 py-2 cursor-pointer text-xs flex items-center gap-2 ${bgClass} ${selectedSession?.id === s.id ? 'ring-2 ring-inset ring-indigo-400' : ''}`}
+                            >
+                              <span style={{ color: iconColor, fontWeight: 'bold', fontSize: '12px' }}>{icon}</span>
+                              <span className="whitespace-nowrap">
+                                {(() => {
+                                  const teacherName = s.teacherName || selectedClass?.teacher || '';
+                                  const dateStr = new Date(s.date).toLocaleDateString('vi-VN');
+                                  const timeStr = s.time || '';
+                                  const dup =
+                                    sessionDatesWithDuplicates.has(s.date) ? ` ┬╖ Buß╗òi ${s.sessionNumber}` : '';
+                                  return teacherName 
+                                    ? `GV: ${teacherName} - ${s.dayOfWeek} - ${dateStr}${timeStr ? ` (${timeStr})` : ''}${dup}`
+                                    : `Buß╗òi ${s.sessionNumber} - ${dateStr} (${s.dayOfWeek})`;
+                                })()}
+                              </span>
+                              {isHoliday && <span className="ml-auto text-xs text-purple-600 font-medium">{s.holidayName || 'Nghß╗ë lß╗à'}</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      </>,
+                      document.body
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    type="date"
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={attendanceDate}
+                    onChange={(e) => handleDateChange(e.target.value)}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Review Tab Controls */}
+        {activeTab === 'review' && (
+          <div className="p-4">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">R├á so├ít ─Éiß╗âm danh</h2>
+                <p className="text-sm text-gray-500">Kiß╗âm tra hß╗ìc sinh ch╞░a ─æ╞░ß╗úc ─æiß╗âm danh tß╗½ buß╗òi hß╗ìc tr╞░ß╗¢c</p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Ng├áy hß╗ìc</label>
+                  <input
+                    type="date"
+                    value={reviewDate}
+                    onChange={(e) => setReviewDate(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Lß╗ìc theo lß╗¢p</label>
+                  <select
+                    value={reviewFilterClass}
+                    onChange={(e) => setReviewFilterClass(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 min-w-[200px]"
+                  >
+                    <option value="">Tß║Ñt cß║ú lß╗¢p</option>
+                    {allClasses.filter(c => ['─Éang hß╗ìc', 'Chß╗¥ mß╗ƒ'].includes(c.status)).map(cls => (
+                      <option key={cls.id} value={cls.id}>{cls.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Bug 4 fix: Add branch filter */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Lß╗ìc theo c╞í sß╗ƒ</label>
+                  <select
+                    value={reviewFilterBranch}
+                    onChange={(e) => setReviewFilterBranch(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 min-w-[150px]"
+                  >
+                    <option value="">Tß║Ñt cß║ú c╞í sß╗ƒ</option>
+                    {[...new Set(allClasses.map(c => c.branch).filter(Boolean))].map(branch => (
+                      <option key={branch} value={branch}>{branch}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ========== ATTENDANCE TAB CONTENT ========== */}
+      {activeTab === 'attendance' && (
+        <>
+      {/* Session info */}
+      {selectedSession && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 flex items-center gap-3">
+          <Calendar className="text-indigo-600" size={20} />
+          <div>
+            <p className="font-medium text-indigo-900">
+              Buß╗òi {selectedSession.sessionNumber}: {selectedSession.dayOfWeek}, {new Date(selectedSession.date).toLocaleDateString('vi-VN')}
+            </p>
+            <p className="text-sm text-indigo-600">
+              {selectedSession.time && `Giß╗¥: ${selectedSession.time}`}
+              {selectedSession.room && ` ΓÇó Ph├▓ng: ${selectedSession.room}`}
+            </p>
+          </div>
+        </div>
+      )}
+      
+      {/* No sessions warning - differentiate between no sessions created vs all completed */}
+      {useSessionMode && selectedClassId && !sessionsLoading && upcomingSessions.length === 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-yellow-800">
+              <AlertCircle size={20} />
+              <span>
+                {allSessions.length === 0
+                  ? 'Ch╞░a c├│ buß╗òi hß╗ìc n├áo ─æ╞░ß╗úc tß║ío cho lß╗¢p n├áy. Vui l├▓ng tß║ío buß╗òi hß╗ìc hoß║╖c chuyß╗ân sang chß║┐ ─æß╗Ö "Chß╗ìn ng├áy".'
+                  : `Tß║Ñt cß║ú ${allSessions.length} buß╗òi hß╗ìc ─æ├ú ─æ╞░ß╗úc ─æiß╗âm danh. Bß║ín c├│ thß╗â chß╗ìn buß╗òi tß╗½ danh s├ích hoß║╖c th├¬m buß╗òi hß╗ìc b├╣.`}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {selectedClass?.schedule && (
+                <button
+                  onClick={handleAutoGenerateSessions}
+                  disabled={generatingSessions}
+                  className="flex items-center gap-1 px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Sß║╜ tß║ío buß╗òi hß╗ìc tß╗½ h├┤m nay theo lß╗ïch hß╗ìc cß╗ºa lß╗¢p"
+                >
+                  {generatingSessions ? (
+                    <>
+                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                      ─Éang tß║ío...
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={14} /> Tß║ío buß╗òi hß╗ìc tß╗▒ ─æß╗Öng
+                    </>
+                  )}
+                </button>
+              )}
+              <button
+                onClick={() => setShowAddSessionModal(true)}
+                className="flex items-center gap-1 px-3 py-1 bg-yellow-600 text-white rounded text-sm hover:bg-yellow-700"
+              >
+                <Plus size={14} /> Th├¬m buß╗òi
+              </button>
+            </div>
+          </div>
+          {/* Debug info - only show in development */}
+          {process.env.NODE_ENV === 'development' && (
+            <div className="mt-2 text-xs text-yellow-600 bg-yellow-100 p-2 rounded">
+              <strong>Debug:</strong> allSessions={allSessions.length}, upcomingSessions={upcomingSessions.length}, 
+              classId={selectedClassId}, sessionsLoading={sessionsLoading ? 'true' : 'false'},
+              schedule={selectedClass?.schedule || 'N/A'}, totalSessions={selectedClass?.totalSessions || 'N/A'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Always show auto-generate and delete buttons when in session mode and class has schedule */}
+      {useSessionMode && selectedClassId && !sessionsLoading && selectedClass?.schedule && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2 text-blue-800">
+              <Calendar size={18} />
+              <span className="text-sm font-medium">
+                Quß║ún l├╜ buß╗òi hß╗ìc
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleAutoGenerateSessions}
+                disabled={generatingSessions || !selectedClass.startDate}
+                className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={selectedClass.startDate 
+                  ? `Sß║╜ tß║ío buß╗òi hß╗ìc tß╗½ ${new Date(selectedClass.startDate).toLocaleDateString('vi-VN')} ─æß║┐n ${selectedClass.endDate ? new Date(selectedClass.endDate).toLocaleDateString('vi-VN') : 'ng├áy kß║┐t th├║c'} theo lß╗ïch hß╗ìc cß╗ºa lß╗¢p`
+                  : 'Lß╗¢p ch╞░a c├│ ng├áy bß║»t ─æß║ºu. Vui l├▓ng cß║¡p nhß║¡t ng├áy bß║»t ─æß║ºu kh├│a hß╗ìc.'}
+              >
+                {generatingSessions ? (
+                  <>
+                    <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                    ─Éang tß║ío...
+                  </>
+                ) : (
+                  <>
+                    <Plus size={14} /> Tß║ío buß╗òi hß╗ìc tß╗▒ ─æß╗Öng
+                  </>
+                )}
+              </button>
+              {allSessions.length > 0 && (
+                <button
+                  onClick={handleDeleteAllSessions}
+                  disabled={deletingSessions}
+                  className="flex items-center gap-1 px-3 py-1.5 bg-red-600 text-white rounded text-sm hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={`X├│a tß║Ñt cß║ú ${allSessions.length} buß╗òi hß╗ìc cß╗ºa lß╗¢p n├áy`}
+                >
+                  {deletingSessions ? (
+                    <>
+                      <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white"></div>
+                      ─Éang x├│a...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={14} /> X├│a to├án bß╗Ö
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+          {selectedClass.startDate && (
+            <div className="text-xs text-blue-600">
+              {selectedClass.endDate ? (
+                <>
+                  <strong>{new Date(selectedClass.startDate).toLocaleDateString('vi-VN')}</strong> - <strong>{new Date(selectedClass.endDate).toLocaleDateString('vi-VN')}</strong>
+                  {allSessions.length > 0 && (
+                    <> ΓÇó Mß╗ùi lß║ºn bß║Ñm tß║ío th├¬m <strong>30 ng├áy</strong></>
+                  )}
+                </>
+              ) : (
+                <>
+                  Tß╗½ <strong>{new Date(selectedClass.startDate).toLocaleDateString('vi-VN')}</strong>
+                  {allSessions.length > 0 && (
+                    <> ΓÇó Mß╗ùi lß║ºn bß║Ñm tß║ío th├¬m <strong>30 ng├áy</strong></>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Warning when session mode is active but no session selected */}
+      {useSessionMode && selectedClassId && !selectedSession && !sessionsLoading && allSessions.length > 0 && (
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 flex items-center gap-2 text-orange-800">
+          <AlertCircle size={20} />
+          <span>
+            <strong>Vui l├▓ng chß╗ìn buß╗òi hß╗ìc:</strong> Bß║ín ─æang ß╗ƒ chß║┐ ─æß╗Ö "Buß╗òi hß╗ìc" nh╞░ng ch╞░a chß╗ìn buß╗òi hß╗ìc n├áo. Vui l├▓ng chß╗ìn buß╗òi hß╗ìc tß╗½ dropdown ph├¡a tr├¬n ─æß╗â bß║»t ─æß║ºu ─æiß╗âm danh.
+          </span>
+        </div>
+      )}
+
+      {/* Message */}
+      {message && (
+        <div className={`p-4 rounded-lg flex items-center gap-2 ${
+          message.type === 'success' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+        }`}>
+          {message.type === 'success' ? <CheckCircle size={20} /> : <AlertCircle size={20} />}
+          {message.text}
+        </div>
+      )}
+
+      {/* Schedule Warning - BLOCKING */}
+      {selectedClassId && !isValidScheduleDay && !useSessionMode && !completedDates.has(attendanceDate) && (
+        <div className="bg-red-100 border-2 border-red-400 rounded-lg p-4 flex items-start gap-3 text-red-800">
+          <AlertTriangle size={24} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-bold text-lg">KH├öNG THß╗é ─ÉIß╗éM DANH - NG├ÇY KH├öNG Hß╗óP Lß╗å</p>
+            <p className="mt-1">
+              Ng├áy {new Date(attendanceDate).toLocaleDateString('vi-VN')} kh├┤ng nß║▒m trong lß╗ïch hß╗ìc cß╗ºa lß╗¢p 
+              {selectedClass?.schedule && <> (Lß╗ïch: {formatSchedule(selectedClass.schedule)})</>}.
+            </p>
+            <p className="text-sm mt-2 text-red-600">
+              Bß║ín chß╗ë c├│ thß╗â ─æiß╗âm danh v├áo c├íc ng├áy trong lß╗ïch hß╗ìc hoß║╖c c├íc ng├áy ─æ├ú ─æiß╗âm danh tr╞░ß╗¢c ─æ├│.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Holiday Warning - BLOCKING */}
+      {selectedDateHoliday && (
+        <div className="bg-red-100 border-2 border-red-400 rounded-lg p-4 flex items-start gap-3 text-red-800">
+          <AlertTriangle size={24} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-bold text-lg">KH├öNG THß╗é ─ÉIß╗éM DANH - NG├ÇY NGHß╗ê</p>
+            <p className="mt-1">
+              <strong>{selectedDateHoliday.name}</strong> ({selectedDateHoliday.startDate} - {selectedDateHoliday.endDate})
+            </p>
+            <p className="text-sm mt-2 text-red-600">
+              ─É├óy l├á ng├áy nghß╗ë ─æ├ú ─æ╞░ß╗úc ─æ─âng k├╜. Kh├┤ng thß╗â l╞░u ─æiß╗âm danh cho ng├áy n├áy.
+            </p>
+            <p className="text-sm mt-1 text-red-600">
+              Nß║┐u c├│ bß║ún ghi c┼⌐, lß╗ïch sß╗¡ ─æiß╗âm danh sß║╜ hiß╗ân thß╗ï trß║íng th├íi "Lß╗èCH NGHß╗ê CHUNG".
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Existing Record Notice */}
+      {existingRecord && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-yellow-800">
+          <div className="flex items-center gap-2">
+            <Clock size={20} />
+            <span>
+              ─É├ú c├│ ─æiß╗âm danh cho lß╗¢p n├áy v├áo ng├áy {existingRecord.date}.
+              Thay ─æß╗òi sß║╜ cß║¡p nhß║¡t bß║ún ghi hiß╗çn tß║íi.
+            </span>
+          </div>
+          <div className="mt-2 text-xs text-yellow-600 bg-yellow-100 p-2 rounded">
+            <strong>Debug:</strong> Record ID: {existingRecord.id} | 
+            ClassId: {existingRecord.classId} | 
+            ClassName: {existingRecord.className || 'MISSING'} |
+            Total: {existingRecord.totalStudents}
+          </div>
+        </div>
+      )}
+
+      {!selectedClassId ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-400">
+          <Calendar size={48} className="mx-auto mb-4 opacity-30" />
+          <p>Vui l├▓ng chß╗ìn lß╗¢p ─æß╗â bß║»t ─æß║ºu ─æiß╗âm danh</p>
+        </div>
+      ) : studentLoading ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
+          <p className="mt-4 text-gray-500">─Éang tß║úi danh s├ích hß╗ìc sinh...</p>
+        </div>
+      ) : classStudents.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center text-gray-400">
+          <Users size={48} className="mx-auto mb-4 opacity-30" />
+          <p>Kh├┤ng c├│ hß╗ìc sinh trong lß╗¢p n├áy</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          {/* Stats Header */}
+          <div className="grid grid-cols-6 border-b border-gray-100 divide-x divide-gray-100">
+            <div className="p-4 text-center">
+              <p className="text-xs text-gray-500 uppercase font-bold">Tß╗òng sß╗æ</p>
+              <p className="text-xl font-bold text-gray-800">{stats.total}</p>
+            </div>
+            <div className="p-4 text-center bg-gray-50">
+              <p className="text-xs text-gray-500 uppercase font-bold">Ch╞░a ─æiß╗âm danh</p>
+              <p className="text-xl font-bold text-gray-600">{stats.pending}</p>
+            </div>
+            <div className="p-4 text-center bg-green-50">
+              <p className="text-xs text-green-600 uppercase font-bold">C├│ mß║╖t</p>
+              <p className="text-xl font-bold text-green-700">{stats.present}</p>
+            </div>
+            <div className="p-4 text-center bg-red-50">
+              <p className="text-xs text-red-600 uppercase font-bold">Vß║»ng</p>
+              <p className="text-xl font-bold text-red-700">{stats.absent}</p>
+            </div>
+            <div className="p-4 text-center bg-orange-50">
+              <p className="text-xs text-orange-600 uppercase font-bold">Bß║úo l╞░u</p>
+              <p className="text-xl font-bold text-orange-700">{stats.reserved}</p>
+            </div>
+            <div className="p-4 text-center bg-blue-50">
+              <p className="text-xs text-blue-600 uppercase font-bold">─É├ú bß╗ôi</p>
+              <p className="text-xl font-bold text-blue-700">{stats.tutored}</p>
+            </div>
+          </div>
+
+          {/* Bulk Actions */}
+          <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-sm font-medium text-gray-600">─Éiß╗âm danh nhanh:</span>
+              <button
+                onClick={() => handleBulkStatus(AttendanceStatus.ON_TIME)}
+                className="px-3 py-1 text-xs font-medium rounded bg-green-100 text-green-700 hover:bg-green-200"
+              >
+                Tß║Ñt cß║ú ─æ├║ng giß╗¥
+              </button>
+              <button
+                onClick={() => handleBulkStatus(AttendanceStatus.ABSENT)}
+                className="px-3 py-1 text-xs font-medium rounded bg-red-100 text-red-700 hover:bg-red-200"
+              >
+                Tß║Ñt cß║ú vß║»ng
+              </button>
+              <button
+                onClick={() => handleBulkStatus(AttendanceStatus.RESERVED)}
+                className="px-3 py-1 text-xs font-medium rounded bg-orange-100 text-orange-700 hover:bg-orange-200"
+              >
+                Tß║Ñt cß║ú bß║úo l╞░u
+              </button>
+            </div>
+            <button
+              onClick={() => setShowGradeFields(!showGradeFields)}
+              className={`px-3 py-1 text-xs font-medium rounded border transition-colors ${
+                showGradeFields 
+                  ? 'bg-indigo-100 text-indigo-700 border-indigo-300' 
+                  : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              {showGradeFields ? 'Γ£ô Nhß║¡p ─æiß╗âm sß╗æ' : '+ Nhß║¡p ─æiß╗âm sß╗æ'}
+            </button>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-gray-600">
+            <thead className="bg-gray-50 text-xs uppercase font-semibold text-gray-500">
+              <tr>
+                <th className="px-4 py-4 w-12">STT</th>
+                <th className="px-4 py-4">Hß╗ìc vi├¬n</th>
+                <th className="px-4 py-4 text-center">Trß║íng th├íi</th>
+                {showGradeFields && (
+                  <>
+                    <th className="px-4 py-4 text-center w-20">% BTVN</th>
+                    <th className="px-4 py-4 w-28">T├¬n b├ái KT</th>
+                    <th className="px-4 py-4 text-center w-20">─Éiß╗âm</th>
+                    <th className="px-4 py-4 text-center w-24">─Éiß╗âm th╞░ß╗ƒng</th>
+                  </>
+                )}
+                <th className="px-4 py-4">Ghi ch├║</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {attendanceData.map((student, index) => (
+                <tr key={student.studentId} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">{index + 1}</td>
+                  <td className="px-4 py-3">
+                    <div>
+                      <p className="font-bold text-gray-900">{student.studentName}</p>
+                      <p className="text-xs text-gray-500">{student.studentCode}</p>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex justify-center gap-1 flex-wrap">
+                      <button
+                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.ON_TIME)}
+                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.ON_TIME, student.status)}`}
+                      >
+                        ─É├║ng giß╗¥
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.LATE)}
+                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.LATE, student.status)}`}
+                      >
+                        Trß╗à giß╗¥
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.ABSENT)}
+                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.ABSENT, student.status)}`}
+                        title="Vß║»ng sß║╜ tß╗▒ ─æß╗Öng tß║ío lß╗ïch bß╗ôi b├ái"
+                      >
+                        Vß║»ng
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.RESERVED)}
+                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.RESERVED, student.status)}`}
+                      >
+                        Bß║úo l╞░u
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.TUTORED)}
+                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.TUTORED, student.status)}`}
+                      >
+                        ─É├ú bß╗ôi
+                      </button>
+                    </div>
+                  </td>
+                  {showGradeFields && (
+                    <>
+                      <td className="px-4 py-3">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          placeholder="%"
+                          value={student.homeworkCompletion ?? ''}
+                          onChange={(e) => handleGradeChange(student.studentId, 'homeworkCompletion', e.target.value ? Number(e.target.value) : undefined)}
+                          className="w-16 px-2 py-1 border border-gray-200 rounded text-center text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="text"
+                          placeholder="B├ái KT..."
+                          value={student.testName || ''}
+                          onChange={(e) => handleGradeChange(student.studentId, 'testName', e.target.value)}
+                          className="w-24 px-2 py-1 border border-gray-200 rounded text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="number"
+                          min="0"
+                          max="10"
+                          step="0.5"
+                          placeholder="0-10"
+                          value={student.score ?? ''}
+                          onChange={(e) => handleGradeChange(student.studentId, 'score', e.target.value ? Number(e.target.value) : undefined)}
+                          className="w-16 px-2 py-1 border border-gray-200 rounded text-center text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={student.bonusPoints ?? ''}
+                          onChange={(e) => handleGradeChange(student.studentId, 'bonusPoints', e.target.value ? Number(e.target.value) : undefined)}
+                          className="w-16 px-2 py-1 border border-gray-200 rounded text-center text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                        />
+                      </td>
+                    </>
+                  )}
+                  <td className="px-4 py-3">
+                    <input
+                      type="text"
+                      placeholder="Ghi ch├║..."
+                      value={student.note}
+                      onChange={(e) => handleNoteChange(student.studentId, e.target.value)}
+                      className="w-full border-b border-gray-200 focus:border-indigo-500 outline-none bg-transparent py-1 text-gray-600"
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="p-4 border-t border-gray-200 bg-gray-50 flex justify-between items-center sticky bottom-0">
+            <div className="text-sm text-gray-500">
+              {stats.absent > 0 && (
+                <span className="flex items-center gap-1 text-orange-600">
+                  <BookOpen size={16} />
+                  {stats.absent} hß╗ìc sinh vß║»ng sß║╜ ─æ╞░ß╗úc tß║ío lß╗ïch bß╗ôi b├ái tß╗▒ ─æß╗Öng
+                </span>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setIsResetting(true);
+                  setAttendanceData(
+                    classStudents.map(s => ({
+                      studentId: s.id,
+                      studentName: s.fullName,
+                      studentCode: s.code,
+                      status: AttendanceStatus.PENDING,
+                      note: '',
+                      punctuality: '',
+                    }))
+                  );
+                }}
+                className="px-6 py-2 border border-gray-300 bg-white rounded-lg text-gray-700 font-medium hover:bg-gray-50"
+              >
+                Reset
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={saving || attendanceData.length === 0 || !!selectedDateHoliday || (useSessionMode && !selectedSession)}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 shadow-sm flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    ─Éang l╞░u...
+                  </>
+                ) : (
+                  <>
+                    <Save size={18} /> L╞░u ─æiß╗âm danh
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Makeup Attendance Confirm Dialog (Phase 4) */}
+      {showMakeupConfirm && (
+        <ModalPortal>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-xl shadow-xl p-6 max-w-md mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <AlertCircle className="text-amber-500" size={24} />
+              <h3 className="text-lg font-semibold">─Éiß╗âm danh hß╗ìc b├╣?</h3>
+            </div>
+
+            <p className="text-gray-600 mb-4">
+              Bß║ín ─æang ─æiß╗âm danh m├á kh├┤ng chß╗ìn buß╗òi hß╗ìc. ─Éiß╗âm danh n├áy sß║╜ ─æ╞░ß╗úc
+              t├¡nh l├á <strong>buß╗òi hß╗ìc b├╣</strong> v├á kh├┤ng ß║únh h╞░ß╗ƒng ─æß║┐n sß╗æ buß╗òi
+              c├▓n lß║íi cß╗ºa hß╗ìc sinh.
+            </p>
+
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowMakeupConfirm(false);
+                  setPendingSaveData(null);
+                  setUseSessionMode(true);
+                }}
+                disabled={saving}
+                className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Chß╗ìn buß╗òi hß╗ìc
+              </button>
+              <button
+                onClick={() => saveWithType('makeup')}
+                disabled={saving}
+                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-50 flex items-center gap-2"
+              >
+                {saving ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    ─Éang l╞░u...
+                  </>
+                ) : (
+                  'X├íc nhß║¡n hß╗ìc b├╣'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+        </ModalPortal>
+      )}
+
+      {/* Add Session Modal */}
+      {showAddSessionModal && selectedClassId && (
+        <AddSessionModal
+          classId={selectedClassId}
+          className={selectedClass?.name || ''}
+          onClose={() => setShowAddSessionModal(false)}
+          onAdd={async (date, time, note) => {
+            try {
+              await addMakeup(date, time, note);
+              setShowAddSessionModal(false);
+              setMessage({ type: 'success', text: '─É├ú th├¬m buß╗òi hß╗ìc b├╣ th├ánh c├┤ng!' });
+            } catch (err) {
+              setMessage({ type: 'error', text: 'Kh├┤ng thß╗â th├¬m buß╗òi hß╗ìc: ' + (err as Error).message });
+            }
+          }}
+        />
+      )}
+        </>
+      )}
+
+      {/* ========== REVIEW TAB CONTENT ========== */}
+      {activeTab === 'review' && (
+        <>
+          {/* Holiday Warning for Review */}
+          {reviewDateHoliday && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
+              <AlertTriangle className="text-red-500 flex-shrink-0" size={24} />
+              <div>
+                <p className="font-medium text-red-800">
+                  NG├ÇY NGHß╗ê: {reviewDateHoliday.name}
+                </p>
+                <p className="text-sm text-red-600">
+                  Ng├áy {reviewDate} l├á ng├áy nghß╗ë ({reviewDateHoliday.startDate} - {reviewDateHoliday.endDate}). C├íc lß╗¢p c├│ thß╗â kh├┤ng cß║ºn ─æiß╗âm danh.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Summary Warning */}
+          {totalUnmarked > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center gap-3">
+              <AlertTriangle className="text-amber-500 flex-shrink-0" size={24} />
+              <div>
+                <p className="font-medium text-amber-800">
+                  C├│ {totalUnmarked} hß╗ìc sinh ch╞░a ─æ╞░ß╗úc ─æiß╗âm danh ng├áy {reviewDate}
+                </p>
+                <p className="text-sm text-amber-600">
+                  Vui l├▓ng r├á so├ít v├á x├íc nhß║¡n trß║íng th├íi ─æiß╗âm danh cho tß╗½ng hß╗ìc sinh
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Loading/Empty/Content */}
+          {reviewLoading ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+              <div className="animate-spin rounded-full h-10 w-10 border-4 border-amber-500 border-t-transparent mx-auto mb-4"></div>
+              <p className="text-gray-500">─Éang tß║úi dß╗» liß╗çu...</p>
+            </div>
+          ) : filteredReviewSessions.length === 0 ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+              <CheckCircle className="mx-auto text-green-500 mb-4" size={48} />
+              <p className="text-gray-600 font-medium">Tß║Ñt cß║ú hß╗ìc sinh ─æ├ú ─æ╞░ß╗úc ─æiß╗âm danh!</p>
+              <p className="text-sm text-gray-400 mt-1">Kh├┤ng c├│ hß╗ìc sinh n├áo cß║ºn r├á so├ít cho ng├áy {reviewDate}</p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {filteredReviewSessions.map(session => (
+                <div key={session.sessionId} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                  {/* Session Header */}
+                  <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-4 py-3">
+                    <h3 className="text-white font-semibold">
+                      Buß╗òi hß╗ìc: {session.sessionDate}
+                    </h3>
+                    <p className="text-amber-100 text-sm">
+                      Lß╗¢p: {session.className} - Buß╗òi {session.sessionNumber}
+                    </p>
+                  </div>
+                  
+                  {/* Students Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-12">STT</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">T├¬n Hß╗ìc sinh</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider w-48">Thß╗¥i gian/ L├╜ do</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider w-40">Trß║íng th├íi</th>
+                          <th className="px-4 py-3 text-center text-xs font-semibold text-gray-600 uppercase tracking-wider w-56">Thao t├íc</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {session.unmarkedStudents.map((student, idx) => (
+                          <tr key={student.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 text-sm text-gray-600">{idx + 1}</td>
+                            <td className="px-4 py-3">
+                              <span className="font-medium text-gray-800">{student.studentName}</span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <input
+                                type="text"
+                                placeholder="Nhß║¡p l├╜ do..."
+                                value={reviewReasons[student.id] || ''}
+                                onChange={(e) => setReviewReasons(prev => ({
+                                  ...prev,
+                                  [student.id]: e.target.value
+                                }))}
+                                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                              />
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
+                                <AlertTriangle size={12} />
+                                Ch╞░a ─æiß╗âm danh
+                              </span>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-center gap-2">
+                                <button
+                                  onClick={() => openReviewConfirmDialog('late', student)}
+                                  className="px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-lg hover:bg-green-700 flex items-center gap-1"
+                                >
+                                  <CheckCircle size={14} />
+                                  ─Éiß╗âm danh ─æß║┐n trß╗à
+                                </button>
+                                <button
+                                  onClick={() => openReviewConfirmDialog('absent', student)}
+                                  className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 flex items-center gap-1"
+                                >
+                                  <XCircle size={14} />
+                                  Vß║»ng/Nghß╗ë hß╗ìc
+                                </button>
+                                {/* Bug 4 fix: Add Bß║úo l╞░u button */}
+                                <button
+                                  onClick={() => openReviewConfirmDialog('reserved', student)}
+                                  className="px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded-lg hover:bg-orange-600 flex items-center gap-1"
+                                >
+                                  <AlertTriangle size={14} />
+                                  Bß║úo l╞░u
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Review Confirm Dialog */}
+      {confirmDialog.show && confirmDialog.student && (
+        <ModalPortal>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-800 mb-4">X├íc nhß║¡n ─æiß╗âm danh</h3>
+            
+            <p className="text-gray-600 mb-4">
+              Bß║ín c├│ chß║»c chß║»n muß╗æn{' '}
+              {confirmDialog.type === 'late' ? (
+                <span className="text-green-600 font-medium">X├íc nhß║¡n ─Éiß╗âm danh ─æß║┐n trß╗à</span>
+              ) : (
+                <span className="text-red-600 font-medium">X├íc nhß║¡n Vß║»ng/Nghß╗ë hß╗ìc</span>
+              )}{' '}
+              cho hß╗ìc sinh <span className="font-semibold">{confirmDialog.student.studentName}</span>?
+            </p>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Ghi ch├║ (t├╣y chß╗ìn)</label>
+              <input
+                type="text"
+                value={confirmDialog.reason}
+                onChange={(e) => setConfirmDialog(prev => ({ ...prev, reason: e.target.value }))}
+                placeholder={confirmDialog.type === 'late' ? 'VD: ─Éß║┐n muß╗Ön 15 ph├║t' : 'VD: C├│ ph├⌐p (ß╗æm)'}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+              />
+            </div>
+            
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmDialog({ show: false, type: 'late', student: null, reason: '' })}
+                disabled={processingReview}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
+              >
+                Hß╗ºy
+              </button>
+              <button
+                onClick={handleReviewConfirm}
+                disabled={processingReview}
+                className={`px-4 py-2 text-white rounded-lg font-medium flex items-center gap-2 ${
+                  confirmDialog.type === 'late' ? 'bg-green-600 hover:bg-green-700' :
+                  confirmDialog.type === 'reserved' ? 'bg-orange-500 hover:bg-orange-600' :
+                  'bg-red-600 hover:bg-red-700'
+                } disabled:opacity-50`}
+              >
+                {processingReview ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                    ─Éang xß╗¡ l├╜...
+                  </>
+                ) : (
+                  'X├íc nhß║¡n'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+        </ModalPortal>
+      )}
+    </div>
+  );
+};
+
+// Add Session Modal Component
+interface AddSessionModalProps {
+  classId: string;
+  className: string;
+  onClose: () => void;
+  onAdd: (date: string, time?: string, note?: string) => Promise<void>;
+}
+
+const AddSessionModal: React.FC<AddSessionModalProps> = ({ classId, className, onClose, onAdd }) => {
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [time, setTime] = useState('');
+  const [note, setNote] = useState('Buß╗òi hß╗ìc b├╣');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!date) {
+      alert('Vui l├▓ng chß╗ìn ng├áy');
+      return;
+    }
+    setLoading(true);
+    try {
+      await onAdd(date, time || undefined, note || undefined);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const dayOfWeek = new Date(date).toLocaleDateString('vi-VN', { weekday: 'long' });
+
+  return (
+    <ModalPortal>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+        <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-purple-50 rounded-t-xl">
+          <div>
+            <h3 className="text-lg font-bold text-gray-800">Th├¬m buß╗òi hß╗ìc</h3>
+            <p className="text-sm text-indigo-600">{className}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <span className="text-2xl">&times;</span>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+            <strong>≡ƒÆí L╞░u ├╜:</strong> Buß╗òi hß╗ìc n├áy sß║╜ ─æ╞░ß╗úc ─æ├ính dß║Ñu l├á "Hß╗ìc b├╣" v├á th├¬m v├áo danh s├ích buß╗òi hß╗ìc cß╗ºa lß╗¢p.
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Ng├áy hß╗ìc *</label>
+            <input
+              type="date"
+              required
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+            />
+            {date && (
+              <p className="text-sm text-gray-500 mt-1">{dayOfWeek}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Giß╗¥ hß╗ìc</label>
+            <div className="flex gap-2">
+              <input
+                type="time"
+                value={time.split('-')[0] || ''}
+                onChange={(e) => {
+                  const end = time.split('-')[1] || '';
+                  setTime(e.target.value + (end ? '-' + end : ''));
+                }}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder="Bß║»t ─æß║ºu"
+              />
+              <span className="flex items-center text-gray-400">-</span>
+              <input
+                type="time"
+                value={time.split('-')[1] || ''}
+                onChange={(e) => {
+                  const start = time.split('-')[0] || '';
+                  setTime((start ? start + '-' : '') + e.target.value);
+                }}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder="Kß║┐t th├║c"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Ghi ch├║</label>
+            <input
+              type="text"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+              placeholder="L├╜ do hß╗ìc b├╣..."
+            />
+          </div>
+
+          <div className="flex gap-3 justify-end pt-4 border-t border-gray-200">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+              disabled={loading}
+            >
+              Hß╗ºy
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  ─Éang th├¬m...
+                </>
+              ) : (
+                <>
+                  <Plus size={16} /> Th├¬m buß╗òi hß╗ìc
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+    </ModalPortal>
+  );
+};

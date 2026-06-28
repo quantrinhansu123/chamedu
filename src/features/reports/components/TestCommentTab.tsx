@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * TestCommentTab Component
  *
@@ -14,8 +15,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, X, AlertTriangle, Edit2, Settings, Award } from 'lucide-react';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, deleteDoc, getDocs } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
 import { Student, TestComment, TestTemplate } from '../../../../types';
 import { TestCommentTemplateModal } from './test-comment-template-modal';
 import { TestCommentEditModal } from './test-comment-edit-modal';
@@ -70,7 +69,7 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
 
     setLoading(true);
     const q = query(
-      collection(db, 'testComments'),
+      collection(null as any /* firebase removed */, 'testComments'),
       where('classId', '==', classId)
     );
 
@@ -94,7 +93,7 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
     }
 
     const q = query(
-      collection(db, 'testTemplates'),
+      collection(null as any /* firebase removed */, 'testTemplates'),
       where('classId', '==', classId)
     );
 
@@ -128,13 +127,13 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
       );
 
       if (existing) {
-        await updateDoc(doc(db, 'testComments', existing.id!), {
+        await updateDoc(doc(null as any /* firebase removed */, 'testComments', existing.id!), {
           comment,
           score,
           updatedAt: new Date().toISOString()
         });
       } else {
-        await addDoc(collection(db, 'testComments'), {
+        await addDoc(collection(null as any /* firebase removed */, 'testComments'), {
           classId,
           studentId,
           studentName,
@@ -164,7 +163,7 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
     try {
       // Create test records for all students
       for (const student of students) {
-        await addDoc(collection(db, 'testComments'), {
+        await addDoc(collection(null as any /* firebase removed */, 'testComments'), {
           classId,
           studentId: student.id,
           studentName: student.fullName,
@@ -198,7 +197,7 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
     try {
       // Get all records for this test
       const q = query(
-        collection(db, 'testComments'),
+        collection(null as any /* firebase removed */, 'testComments'),
         where('classId', '==', classId),
         where('testName', '==', testName)
       );
@@ -206,7 +205,7 @@ export const TestCommentTab: React.FC<TestCommentTabProps> = ({
 
       // Delete all records
       for (const docSnap of snapshot.docs) {
-        await deleteDoc(doc(db, 'testComments', docSnap.id));
+        await deleteDoc(doc(null as any /* firebase removed */, 'testComments', docSnap.id));
       }
 
       setTestToDelete(null);

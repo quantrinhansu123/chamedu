@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Staff Reward & Penalty Page
  * - Thưởng gia hạn cho GVCN/TG
@@ -6,8 +7,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Gift, AlertTriangle, Settings, Plus, Trash2, X, DollarSign, Clock, User, Calendar, FileText, ChevronDown } from 'lucide-react';
-import { collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { useStaff } from '../src/hooks/useStaff';
 import { formatCurrency } from '../src/utils/currencyUtils';
 import { ModalPortal } from '@/components/modal-portal';
@@ -86,7 +85,7 @@ export const StaffRewardPenalty: React.FC = () => {
 
   // Fetch records - simplified query without compound index requirement
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'staffRewardPenalty'), (snapshot) => {
+    const unsubscribe = onSnapshot(collection(null as any /* firebase removed */, 'staffRewardPenalty'), (snapshot) => {
       const allData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as RewardPenaltyRecord[];
       // Filter by month/year in client
       const filtered = allData
@@ -104,7 +103,7 @@ export const StaffRewardPenalty: React.FC = () => {
 
   // Fetch configs
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'rewardPenaltyConfig'), (snapshot) => {
+    const unsubscribe = onSnapshot(collection(null as any /* firebase removed */, 'rewardPenaltyConfig'), (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as RewardPenaltyConfig[];
       setConfigs(data);
     });
@@ -146,7 +145,7 @@ export const StaffRewardPenalty: React.FC = () => {
         createdBy: 'Admin'
       };
       
-      await addDoc(collection(db, 'staffRewardPenalty'), recordData);
+      await addDoc(collection(null as any /* firebase removed */, 'staffRewardPenalty'), recordData);
       setShowAddModal(false);
       setNewRecord({
         type: 'reward',
@@ -191,12 +190,12 @@ export const StaffRewardPenalty: React.FC = () => {
       };
 
       if (newConfig.id) {
-        await updateDoc(doc(db, 'rewardPenaltyConfig', newConfig.id), {
+        await updateDoc(doc(null as any /* firebase removed */, 'rewardPenaltyConfig', newConfig.id), {
           ...configData,
           updatedAt: new Date().toISOString()
         });
       } else {
-        await addDoc(collection(db, 'rewardPenaltyConfig'), {
+        await addDoc(collection(null as any /* firebase removed */, 'rewardPenaltyConfig'), {
           ...configData,
           createdAt: new Date().toISOString()
         });
@@ -226,7 +225,7 @@ export const StaffRewardPenalty: React.FC = () => {
   const handleDeleteRecord = async (id: string) => {
     if (!confirm('Bạn có chắc muốn xóa?')) return;
     try {
-      await deleteDoc(doc(db, 'staffRewardPenalty', id));
+      await deleteDoc(doc(null as any /* firebase removed */, 'staffRewardPenalty', id));
     } catch (err) {
       console.error('Error deleting:', err);
     }
@@ -236,7 +235,7 @@ export const StaffRewardPenalty: React.FC = () => {
   const handleDeleteConfig = async (id: string) => {
     if (!confirm('Bạn có chắc muốn xóa cấu hình này?')) return;
     try {
-      await deleteDoc(doc(db, 'rewardPenaltyConfig', id));
+      await deleteDoc(doc(null as any /* firebase removed */, 'rewardPenaltyConfig', id));
     } catch (err) {
       console.error('Error deleting config:', err);
     }
@@ -245,7 +244,7 @@ export const StaffRewardPenalty: React.FC = () => {
   // Update record status
   const handleUpdateStatus = async (id: string, newStatus: 'pending' | 'approved' | 'paid') => {
     try {
-      await updateDoc(doc(db, 'staffRewardPenalty', id), {
+      await updateDoc(doc(null as any /* firebase removed */, 'staffRewardPenalty', id), {
         status: newStatus,
         updatedAt: new Date().toISOString()
       });

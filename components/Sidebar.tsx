@@ -25,6 +25,7 @@ import { MenuItem } from '../types';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
 import { ModuleKey } from '../src/services/permissionService';
+import brandLogo from '@/pages/Logo tách nền.png';
 
 // Map subItem id to ModuleKey for permission checking
 const subItemToModule: Record<string, ModuleKey> = {
@@ -34,6 +35,7 @@ const subItemToModule: Record<string, ModuleKey> = {
   'attendance': 'attendance',
   'tutoring': 'tutoring',
   'homework': 'homework',
+  'materials': 'homework',
   'attendance-history': 'attendance_history',
   'enrollment-history': 'enrollment_history',
   'students': 'students',
@@ -60,7 +62,6 @@ const subItemToModule: Record<string, ModuleKey> = {
   'settings-center': 'settings',
   'settings-staff': 'settings',
   'settings-products': 'settings',
-  'settings-inventory': 'settings',
   'settings-rooms': 'settings',
   'settings-wifi': 'wifi_management',     // WiFi management (admin only)
   'rewards': 'reward_penalty',          // Gap #6: Thưởng/Phạt
@@ -70,7 +71,7 @@ const subItemToModule: Record<string, ModuleKey> = {
 
 // Map parent menu to required modules (at least one must be visible)
 const parentMenuModules: Record<string, ModuleKey[]> = {
-  'training': ['classes', 'schedule', 'holidays', 'attendance', 'tutoring', 'homework', 'attendance_history', 'enrollment_history'],
+  'training': ['classes', 'schedule', 'attendance', 'tutoring', 'homework', 'attendance_history', 'enrollment_history'],
   'customers': ['students', 'parents', 'students_dropped', 'students_reserved', 'feedback', 'students_trial'],
   'business': ['leads', 'campaigns'],
   'hr': ['staff', 'salary_config', 'work_confirmation', 'leave_request', 'salary_teacher', 'salary_staff', 'reward_penalty'],
@@ -99,12 +100,11 @@ const menuItems: MenuItem[] = [
     subItems: [
       { id: 'classes', label: 'Lớp học', path: '/training/classes', icon: ChevronRight },
       { id: 'schedule', label: 'Thời khóa biểu', path: '/training/schedule', icon: ChevronRight },
-      { id: 'holidays', label: 'Lịch nghỉ', path: '/training/holidays', icon: ChevronRight },
       { id: 'attendance', label: 'Điểm danh', path: '/training/attendance', icon: ChevronRight },
       { id: 'tutoring', label: 'Lịch bồi', path: '/training/tutoring', icon: ChevronRight },
       { id: 'homework', label: 'Bài tập về nhà', path: '/training/homework', icon: ChevronRight },
+      { id: 'materials', label: 'Học liệu', path: '/training/homework?tab=materials', icon: ChevronRight },
       { id: 'attendance-history', label: 'Lịch sử điểm danh', path: '/training/attendance-history', icon: ChevronRight },
-      { id: 'enrollment-history', label: 'Lịch sử ghi danh', path: '/training/enrollment', icon: ChevronRight },
     ]
   },
   {
@@ -115,7 +115,7 @@ const menuItems: MenuItem[] = [
       { id: 'students', label: 'Danh sách học viên', path: '/customers/students', icon: ChevronRight },
       { id: 'parents', label: 'Danh sách phụ huynh', path: '/customers/parents', icon: ChevronRight },
       { id: 'dropped', label: 'DS Học viên đã nghỉ', path: '/customers/dropped', icon: ChevronRight },
-      { id: 'reserved', label: 'DS Học viên bảo lưu', path: '/customers/reserved', icon: ChevronRight },
+
       { id: 'feedback', label: 'Phản hồi khách hàng', path: '/customers/feedback', icon: ChevronRight },
       { id: 'trial', label: 'DS Học viên học thử', path: '/customers/trial', icon: ChevronRight },
     ]
@@ -148,9 +148,9 @@ const menuItems: MenuItem[] = [
     label: 'Tài chính',
     icon: DollarSign,
     subItems: [
-      { id: 'contracts', label: 'Danh sách hợp đồng', path: '/finance/contracts', icon: ChevronRight },
-      { id: 'contracts-create', label: 'Tạo hợp đồng', path: '/finance/contracts/create', icon: ChevronRight },
-      { id: 'invoices', label: 'Hóa đơn bán sách', path: '/finance/invoices', icon: ChevronRight },
+
+
+      { id: 'invoices', label: 'Hóa đơn học phí', path: '/finance/invoices', icon: ChevronRight },
       { id: 'debt', label: 'Quản lý công nợ', path: '/finance/debt', icon: ChevronRight },
       { id: 'revenue', label: 'Báo cáo doanh thu', path: '/finance/revenue', icon: ChevronRight },
     ]
@@ -172,9 +172,7 @@ const menuItems: MenuItem[] = [
     subItems: [
       { id: 'settings-center', label: 'Quản lý cơ sở', path: '/settings/center', icon: ChevronRight },
       { id: 'settings-staff', label: 'Quản lý nhân viên', path: '/settings/staff', icon: ChevronRight },
-      { id: 'settings-curriculum', label: 'Quản lý Gói học', path: '/settings/curriculum', icon: ChevronRight },
-      { id: 'settings-products', label: 'Quản lý vật phẩm', path: '/settings/products', icon: ChevronRight },
-      { id: 'settings-inventory', label: 'Quản lý kho', path: '/settings/inventory', icon: ChevronRight },
+      { id: 'settings-products', label: 'Quản lý Sản phẩm', path: '/settings/products', icon: ChevronRight },
       { id: 'settings-rooms', label: 'Quản lý phòng học', path: '/settings/rooms', icon: ChevronRight },
       { id: 'settings-wifi', label: 'Quản lý WiFi', path: '/settings/wifi', icon: Wifi },
     ]
@@ -258,7 +256,7 @@ export const Sidebar: React.FC = () => {
     <>
       {/* Mobile Toggle */}
       <button
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-indigo-600 text-white rounded-md shadow-lg print:hidden"
+        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-[#5A3416] text-white rounded-md shadow-lg print:hidden"
         onClick={toggleMobileSidebar}
       >
         {isOpen ? <X size={24} /> : <Menu size={24} />}
@@ -266,17 +264,17 @@ export const Sidebar: React.FC = () => {
 
       {/* Sidebar Container */}
       <div className={`
-        fixed inset-y-0 left-0 z-40 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out
+        fixed inset-y-0 left-0 z-40 w-64 bg-[#FFFEF7] border-r border-[#F2E6CC] transform transition-transform duration-300 ease-in-out
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
         lg:translate-x-0 lg:static lg:block print:hidden
       `}>
         <div className="h-full flex flex-col">
           {/* Logo */}
-          <div className="h-20 flex items-center justify-center border-b border-gray-200 px-4">
+          <div className="h-24 flex items-center justify-center border-b border-[#F2E6CC] px-2 bg-white">
             <img
-              src="/logo.jpg"
+              src={brandLogo}
               alt="Logo"
-              className="h-16 w-auto object-contain"
+              className="h-full w-full object-contain"
             />
           </div>
 
@@ -292,7 +290,7 @@ export const Sidebar: React.FC = () => {
                       className={`
                         w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors
                         ${expandedMenus.includes(item.id)
-                          ? 'bg-indigo-50 text-indigo-700'
+                          ? 'bg-[#FFF6D9] text-[#5A3416]'
                           : 'text-gray-700 hover:bg-gray-100'}
                       `}
                     >
@@ -305,7 +303,7 @@ export const Sidebar: React.FC = () => {
 
                     {/* Sub Menu */}
                     {expandedMenus.includes(item.id) && (
-                      <div className="mt-1 ml-4 pl-3 border-l-2 border-indigo-100 space-y-1">
+                      <div className="mt-1 ml-4 pl-3 border-l-2 border-[#F7D06A] space-y-1">
                         {item.subItems.map((sub) => (
                           <NavLink
                             key={sub.id}
@@ -313,7 +311,7 @@ export const Sidebar: React.FC = () => {
                             className={({ isActive }) => `
                               flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors
                               ${isActive
-                                ? 'text-indigo-600 font-semibold bg-white shadow-sm'
+                                ? 'text-[#A95A00] font-semibold bg-white shadow-sm'
                                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-50'}
                             `}
                           >
@@ -330,7 +328,7 @@ export const Sidebar: React.FC = () => {
                     className={({ isActive }) => `
                       flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors mb-1
                       ${isActive
-                        ? 'bg-indigo-600 text-white shadow-md'
+                        ? 'bg-[#5A3416] text-[#FFF7D6] shadow-md'
                         : 'text-gray-700 hover:bg-gray-100'}
                     `}
                   >
@@ -343,12 +341,12 @@ export const Sidebar: React.FC = () => {
           </nav>
 
           {/* User Profile Snippet with Dropdown - Gap #7 */}
-          <div className="p-4 border-t border-gray-200 relative" ref={profileMenuRef}>
+          <div className="p-4 border-t border-[#F2E6CC] relative" ref={profileMenuRef}>
             <button
               onClick={() => setShowProfileMenu(!showProfileMenu)}
               className="flex items-center gap-3 w-full hover:bg-gray-50 rounded-lg p-2 -m-2 transition-colors"
             >
-              <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold">
+              <div className="w-10 h-10 rounded-full bg-[#FFF6D9] flex items-center justify-center text-[#5A3416] font-bold">
                 {userInitials}
               </div>
               <div className="flex-1 min-w-0 text-left">

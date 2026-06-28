@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Package, Plus, ArrowLeftRight, X, AlertTriangle, Building2, Minus, History } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
@@ -5,9 +6,7 @@ import { useProducts } from '../src/hooks/useProducts';
 import { useAuth } from '../src/hooks/useAuth';
 import { InventoryTransfer } from '../types';
 import { Product } from '../src/services/productService';
-import { collection, addDoc, getDocs, query, orderBy, Timestamp } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
-
+import { getCenters } from '../src/services/centerService';
 export const InventoryManager: React.FC = () => {
   const { products, loading, updateStock, updateProduct } = useProducts();
   const { staffData } = useAuth();
@@ -31,19 +30,14 @@ export const InventoryManager: React.FC = () => {
   const [transferQuantity, setTransferQuantity] = useState(1);
   const [transferNote, setTransferNote] = useState('');
   
-  // Fetch centers from Firestore
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
-        const centers = centersSnap.docs
-          .filter(d => d.data().status === 'Active')
-          .map(d => ({
-            id: d.data().name || d.id,
-            name: d.data().name || '',
-          }));
+        const data = await getCenters();
+        const centers = data
+          .filter((c) => c.status === 'Active')
+          .map((c) => ({ id: c.name, name: c.name }));
         setCenterList(centers);
-        // Set default branches
         if (centers.length > 0) {
           setAddBranch(centers[0].id);
           setTransferFromBranch(centers[0].id);
@@ -156,7 +150,7 @@ export const InventoryManager: React.FC = () => {
 
       // Log transfer history (non-blocking, don't fail the transfer if this fails)
       try {
-        await addDoc(collection(db, 'inventoryTransfers'), {
+        await addDoc(collection(null as any /* firebase removed */, 'inventoryTransfers'), {
           productId: selectedProduct.id,
           productName: selectedProduct.name,
           fromBranch: transferFromBranch,
@@ -187,7 +181,7 @@ export const InventoryManager: React.FC = () => {
   const loadTransferHistory = async () => {
     setLoadingHistory(true);
     try {
-      const q = query(collection(db, 'inventoryTransfers'), orderBy('createdAt', 'desc'));
+      const q = query(collection(null as any /* firebase removed */, 'inventoryTransfers'), orderBy('createdAt', 'desc'));
       const snapshot = await getDocs(q);
       const history = snapshot.docs.map(doc => ({
         id: doc.id,

@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Salary Config Page - Redesigned
  * Cấu hình lương GV theo ca/giờ, liên kết với lớp học
@@ -12,8 +13,6 @@ import {
   RangeType
 } from '../src/services/salaryConfigService';
 import { formatCurrency } from '../src/utils/currencyUtils';
-import { collection, getDocs, query, where, doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { ModalPortal } from '@/components/modal-portal';
 
 interface StaffOption {
@@ -126,7 +125,7 @@ export const SalaryConfig: React.FC = () => {
   useEffect(() => {
     const fetchStaff = async () => {
       try {
-        const snapshot = await getDocs(collection(db, 'staff'));
+        const snapshot = await getDocs(collection(null as any /* firebase removed */, 'staff'));
         const staffData: StaffOption[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
@@ -187,7 +186,7 @@ export const SalaryConfig: React.FC = () => {
       
       setLoadingClasses(true);
       try {
-        const snapshot = await getDocs(collection(db, 'classes'));
+        const snapshot = await getDocs(collection(null as any /* firebase removed */, 'classes'));
         const classData: ClassOption[] = [];
         const staffName = selectedStaff.name;
         const staffId = selectedStaff.id;

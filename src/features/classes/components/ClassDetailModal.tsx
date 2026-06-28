@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * ClassDetailModal Component
  * Modal for viewing class details, session progress, and student stats
@@ -8,8 +9,6 @@ import React, { useState, useEffect } from 'react';
 import { X, Users, Clock, Calendar, MapPin, User, GraduationCap, BookOpen, CheckCircle, Edit } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
 import { ClassModel } from '@/types';
-import { collection, getDocs, query, where, addDoc } from 'firebase/firestore';
-import { db } from '@/src/config/firebase';
 import { formatSchedule } from '@/src/utils/scheduleUtils';
 
 // Type for ClassSession used in detail modal
@@ -83,7 +82,7 @@ export const ClassDetailModal: React.FC<ClassDetailModalProps> = ({
       setLoading(true);
       try {
         // Fetch students
-        const studentsSnap = await getDocs(collection(db, 'students'));
+        const studentsSnap = await getDocs(collection(null as any /* firebase removed */, 'students'));
         const students = studentsSnap.docs
           .map(doc => ({ id: doc.id, ...doc.data() }))
           .filter((s: any) =>
@@ -98,7 +97,7 @@ export const ClassDetailModal: React.FC<ClassDetailModalProps> = ({
         // Fetch sessions
         const sessionsSnap = await getDocs(
           query(
-            collection(db, 'classSessions'),
+            collection(null as any /* firebase removed */, 'classSessions'),
             where('classId', '==', classData.id)
           )
         );
@@ -209,7 +208,7 @@ export const ClassDetailModal: React.FC<ClassDetailModalProps> = ({
 
       // Save to Firestore
       for (const session of sessions) {
-        await addDoc(collection(db, 'classSessions'), session);
+        await addDoc(collection(null as any /* firebase removed */, 'classSessions'), session);
       }
 
       alert(`Đã tạo ${sessions.length} buổi học!`);
@@ -319,12 +318,32 @@ export const ClassDetailModal: React.FC<ClassDetailModalProps> = ({
               </div>
             </div>
             <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+              <Calendar className="text-blue-600 mt-0.5" size={20} />
+              <div>
+                <p className="text-xs text-gray-500">Ngay tao lop</p>
+                <p className="font-medium text-gray-800">{formatDateSafe(classData.createdDate || classData.createdAt)}</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
               <BookOpen className="text-indigo-600 mt-0.5" size={20} />
               <div>
                 <p className="text-xs text-gray-500">Chương trình</p>
                 <p className="font-medium text-gray-800">{classData.curriculum || 'Chưa có'}</p>
               </div>
             </div>
+            {classData.tuitionFee !== undefined && classData.tuitionFee > 0 && (
+              <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                <div className="text-emerald-600 mt-0.5 flex-shrink-0">
+                  <span className="font-bold text-lg leading-none">₫</span>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Học phí</p>
+                  <p className="font-medium text-gray-800">
+                    {classData.tuitionFee ? classData.tuitionFee.toLocaleString('vi-VN') + 'đ' : 'Chưa cập nhật'}
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Session Progress */}

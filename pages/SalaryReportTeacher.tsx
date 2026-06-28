@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Salary Report Teacher Page
  * Báo cáo lương GV/TG với Firebase integration
@@ -9,8 +10,6 @@ import { Info, DollarSign, Users, X, Edit2, Save, Check, ShieldAlert } from 'luc
 import { ModalPortal } from '@/components/modal-portal';
 import { useSalaryReport } from '../src/hooks/useSalaryReport';
 import { formatCurrency } from '../src/utils/currencyUtils';
-import { doc, setDoc, collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { usePermissions } from '../src/hooks/usePermissions';
 
 interface ActualSalary {
@@ -57,7 +56,7 @@ export const SalaryReportTeacher: React.FC = () => {
     const loadActualSalaries = async () => {
       try {
         const q = query(
-          collection(db, 'actualSalaries'),
+          collection(null as any /* firebase removed */, 'actualSalaries'),
           where('month', '==', selectedMonth),
           where('year', '==', selectedYear)
         );
@@ -86,7 +85,7 @@ export const SalaryReportTeacher: React.FC = () => {
     setSavingActual(true);
     try {
       const docId = `${staffId}_${selectedMonth}_${selectedYear}`;
-      await setDoc(doc(db, 'actualSalaries', docId), {
+      await setDoc(doc(null as any /* firebase removed */, 'actualSalaries', docId), {
         staffId,
         month: selectedMonth,
         year: selectedYear,
@@ -116,7 +115,7 @@ export const SalaryReportTeacher: React.FC = () => {
 
     try {
       // Save to workSessions collection (source of truth)
-      const docRef = doc(db, 'workSessions', editingSession.id);
+      const docRef = doc(null as any /* firebase removed */, 'workSessions', editingSession.id);
       await setDoc(docRef, {
         date: editingSession.date,
         timeStart: editingSession.time?.split(' - ')[0] || editingSession.timeStart,

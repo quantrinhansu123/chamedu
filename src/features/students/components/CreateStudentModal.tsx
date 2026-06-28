@@ -4,10 +4,11 @@
  * Extracted from pages/StudentManager.tsx for modularity
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { UserPlus } from 'lucide-react';
 import { Student, StudentStatus, Parent, ClassModel, Center } from '@/types';
 import { ModalPortal } from '@/components/modal-portal';
+import { SearchableSelect } from '@/components/SearchableSelect';
 
 export interface CreateStudentModalProps {
   parents: Array<Parent & { children: Student[] }>;
@@ -35,9 +36,22 @@ export const CreateStudentModal: React.FC<CreateStudentModalProps> = ({ parents,
   });
 
   const selectedParent = parents.find(p => p.id === formData.parentId);
+  const parentOptions = useMemo(() => parents.map(parent => ({
+    value: parent.id,
+    label: `${parent.name} - ${parent.phone}`,
+    sublabel: [
+      parent.children.length > 0 ? `${parent.children.length} con` : 'Chưa có học sinh',
+      parent.children.map(child => child.fullName).join(', '),
+    ].filter(Boolean).join(' - '),
+  })), [parents]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (parentMode === 'select' && !formData.parentId) {
+      alert('Vui lòng chọn phụ huynh');
+      return;
+    }
 
     // If user explicitly chooses "Nghỉ học", keep it even when remainingSessions < 0.
     // Otherwise, auto-set status = 'Nợ phí' when remainingSessions < 0.
@@ -193,20 +207,13 @@ export const CreateStudentModal: React.FC<CreateStudentModalProps> = ({ parents,
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Chọn phụ huynh <span className="text-red-500">*</span>
                   </label>
-                  <select
-                    required
+                  <SearchableSelect
+                    options={parentOptions}
                     value={formData.parentId}
-                    onChange={(e) => setFormData({ ...formData, parentId: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                  >
-                    <option value="">-- Chọn phụ huynh --</option>
-                    {parents.map(parent => (
-                      <option key={parent.id} value={parent.id}>
-                        {parent.name} - {parent.phone}
-                        {parent.children.length > 0 && ` (${parent.children.length} con)`}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(parentId) => setFormData({ ...formData, parentId })}
+                    placeholder="-- Chọn phụ huynh --"
+                    emptyMessage="Không tìm thấy phụ huynh phù hợp"
+                  />
                   {selectedParent && (
                     <div className="mt-2 p-3 bg-indigo-50 rounded-lg text-sm">
                       <p className="font-medium text-indigo-800">{selectedParent.name}</p>
@@ -294,39 +301,6 @@ export const CreateStudentModal: React.FC<CreateStudentModalProps> = ({ parents,
               )}
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Số buổi đăng ký
-              </label>
-              <input
-                type="number"
-                min={0}
-                value={formData.registeredSessions}
-                onChange={(e) => setFormData({ ...formData, registeredSessions: parseInt(e.target.value) || 0 })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                placeholder="VD: 24"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Số buổi còn lại <span className="text-gray-400 font-normal">(âm = nợ phí)</span>
-              </label>
-              <input
-                type="number"
-                value={formData.remainingSessions}
-                onChange={(e) => setFormData({ ...formData, remainingSessions: parseInt(e.target.value) || 0 })}
-                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent ${
-                  formData.remainingSessions < 0 ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                }`}
-                placeholder="VD: 10 hoặc -2"
-              />
-              {formData.remainingSessions < 0 && (
-                <p className="text-xs text-red-600 mt-1 font-medium">
-                  Nợ {Math.abs(formData.remainingSessions)} buổi - Tự động chuyển sang "Nợ phí"
-                </p>
-              )}
-            </div>
           </div>
 
           <div className="flex gap-3 justify-end pt-4 border-t border-gray-200">

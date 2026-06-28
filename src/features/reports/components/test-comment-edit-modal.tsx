@@ -5,10 +5,9 @@
  * Includes scores, content descriptions, strengths, improvements, and attitude.
  */
 
+import { doc, updateDoc } from '@/src/utils/legacyFirestoreStub';
 import React, { useState, useEffect } from 'react';
 import { X, Save, Download, Award, FileText, Printer } from 'lucide-react';
-import { updateDoc, doc } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
 import { TestComment, SkillScore, SkillContent } from '../../../../types';
 import { generateTestCommentPDF, downloadBlob } from '../../../services/testCommentPdfService';
 import { TestCommentPrintPreview } from './test-comment-print-preview';
@@ -82,7 +81,7 @@ export const TestCommentEditModal: React.FC<TestCommentEditModalProps> = ({
 
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'testComments', comment.id), {
+      await updateDoc(doc(null as any /* firebase removed */, 'testComments', comment.id), {
         ...editFormData,
         updatedAt: new Date().toISOString()
       });

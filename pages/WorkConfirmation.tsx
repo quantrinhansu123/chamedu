@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Work Confirmation Page
  * Xác nhận công giáo viên & trợ giảng
@@ -7,8 +8,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Search, CheckCircle, Clock, Plus, User, UserX, XCircle, Pencil, Trash2, X, History, MapPin } from 'lucide-react';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { useAutoWorkSessions, WorkSession } from '../src/hooks/useAutoWorkSessions';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
@@ -74,7 +73,7 @@ export const WorkConfirmation: React.FC = () => {
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
+        const centersSnap = await getDocs(collection(null as any /* firebase removed */, 'centers'));
         const centerData = centersSnap.docs
           .filter(d => d.data().status === 'Active')
           .map(d => ({ id: d.id, name: d.data().name || '' }));

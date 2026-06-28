@@ -13,6 +13,7 @@ interface UseInvoicesReturn {
   totalRevenue: number;
   pendingCount: number;
   createInvoice: (data: Omit<Invoice, 'id' | 'invoiceCode'>) => Promise<string>;
+  createBulkInvoices: (data: Omit<Invoice, 'id' | 'invoiceCode'>[]) => Promise<void>;
   updateInvoice: (id: string, data: Partial<Invoice>) => Promise<void>;
   markAsPaid: (id: string) => Promise<void>;
   cancelInvoice: (id: string) => Promise<void>;
@@ -31,8 +32,8 @@ export const useInvoices = (): UseInvoicesReturn => {
       setError(null);
       const data = await invoiceService.getInvoices();
       setInvoices(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+    } catch (err: any) {
+      setError(err?.message || 'Unknown error');
     } finally {
       setLoading(false);
     }
@@ -74,6 +75,11 @@ export const useInvoices = (): UseInvoicesReturn => {
     await fetchInvoices();
   };
 
+  const createBulkInvoices = async (data: Omit<Invoice, 'id' | 'invoiceCode'>[]): Promise<void> => {
+    await invoiceService.createBulkInvoices(data);
+    await fetchInvoices();
+  };
+
   return {
     invoices,
     loading,
@@ -81,6 +87,7 @@ export const useInvoices = (): UseInvoicesReturn => {
     totalRevenue,
     pendingCount,
     createInvoice,
+    createBulkInvoices,
     updateInvoice,
     markAsPaid,
     cancelInvoice,

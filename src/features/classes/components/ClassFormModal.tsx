@@ -7,12 +7,16 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { X, Plus, AlertTriangle } from 'lucide-react';
 import { ClassStatus, ClassModel, DayScheduleConfig } from '@/types';
-import { collection, getDocs, query, where, addDoc } from 'firebase/firestore';
-import { db } from '@/src/config/firebase';
 import { CLASS_COLOR_PALETTE, hashClassName } from '@/pages/Schedule';
 import { parseScheduleDays } from '@/src/utils/scheduleUtils';
 import { calcMinutesBetween } from '@/src/utils/timeUtils';
 import { ModalPortal } from '@/components/modal-portal';
+import { getCenters } from '@/src/services/centerService';
+import { StaffService } from '@/src/services/staffService';
+import { ClassService } from '@/src/services/classService';
+import { getSessionsByClass } from '@/src/services/sessionService';
+import { getCurriculums, createCurriculum } from '@/src/services/curriculumService';
+import { StudentService } from '@/src/services/studentService';
 
 export interface ClassFormModalProps {
   classData?: ClassModel;
@@ -21,7 +25,6 @@ export interface ClassFormModalProps {
 }
 
 export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClose, onSubmit }) => {
-  // Helper to parse existing scheduleDetails or create from legacy data
   const initScheduleDetails = (): Record<string, DayScheduleConfig> => {
     if (classData?.scheduleDetails && classData.scheduleDetails.length > 0) {
       const details: Record<string, DayScheduleConfig> = {};
@@ -31,6 +34,16 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       return details;
     }
     return {};
+  };
+
+  const formatNumber = (num: number | undefined) => {
+    if (num === undefined || num === 0) return '';
+    return num.toLocaleString('vi-VN');
+  };
+
+  const parseNumber = (val: string) => {
+    const num = parseInt(val.replace(/[^\d]/g, ''), 10);
+    return isNaN(num) ? 0 : num;
   };
 
   const [formData, setFormData] = useState({
@@ -44,11 +57,13 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     progress: classData?.progress || '0/48',
     // Use nullish coalescing (??) to allow 0 values (0 means unlimited)
     totalSessions: classData?.totalSessions ?? 48,
+    tuitionFee: classData?.tuitionFee || 0,
     schedule: classData?.schedule || '',
     scheduleStartTime: '',
     scheduleEndTime: '',
     scheduleDays: [] as string[],
     room: classData?.room || '',
+    createdDate: classData?.createdDate || new Date().toISOString().split('T')[0],
     startDate: classData?.startDate || new Date().toISOString().split('T')[0],
     endDate: classData?.endDate || '',
     status: classData?.status || ClassStatus.PENDING,
@@ -73,7 +88,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
   });
 
   const [scheduleDetailsByDay, setScheduleDetailsByDay] = useState<Record<string, DayScheduleConfig>>(initScheduleDetails);
-  const [useDetailedSchedule, setUseDetailedSchedule] = useState(!!classData?.scheduleDetails?.length);
 
   // Fetch actual session count for existing classes without totalSessions
   useEffect(() => {
@@ -81,10 +95,8 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       // Only fetch if totalSessions is undefined/null (not set), not if it's 0 (unlimited)
       if (classData && (classData.totalSessions === undefined || classData.totalSessions === null)) {
         try {
-          const sessionsSnap = await getDocs(
-            query(collection(db, 'classSessions'), where('classId', '==', classData.id))
-          );
-          const actualCount = sessionsSnap.size;
+          const sessions = await getSessionsByClass(classData.id);
+          const actualCount = sessions.length;
           if (actualCount > 0) {
             setFormData(prev => ({
               ...prev,
@@ -129,18 +141,16 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
   const [curriculumList, setCurriculumList] = useState<string[]>([]);
   const [showCurriculumDropdown, setShowCurriculumDropdown] = useState(false);
 
-  // Fetch curriculums
   useEffect(() => {
     const fetchCurriculums = async () => {
       try {
-        const curriculumsSnap = await getDocs(collection(db, 'curriculums'));
-        const list = curriculumsSnap.docs.map(doc => doc.data().name as string).filter(Boolean);
-        const classesSnap = await getDocs(collection(db, 'classes'));
-        const classCurriculums = classesSnap.docs
-          .map(doc => doc.data().curriculum as string)
-          .filter(Boolean);
-        const allCurriculums = [...new Set([...list, ...classCurriculums])].sort();
-        setCurriculumList(allCurriculums);
+        const [list, classes] = await Promise.all([
+          getCurriculums(),
+          ClassService.getClasses(),
+        ]);
+        const names = list.map((c) => c.name).filter(Boolean);
+        const classCurriculums = classes.map((c) => c.curriculum).filter(Boolean);
+        setCurriculumList([...new Set([...names, ...classCurriculums])].sort());
       } catch (err) {
         console.error('Error fetching curriculums:', err);
       }
@@ -148,15 +158,21 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     fetchCurriculums();
   }, []);
 
-  // Save new curriculum
   const saveCurriculum = async (name: string) => {
-    if (!name.trim() || curriculumList.includes(name.trim())) return;
+    const trimmed = name.trim();
+    if (!trimmed || curriculumList.includes(trimmed)) return;
     try {
-      await addDoc(collection(db, 'curriculums'), {
-        name: name.trim(),
-        createdAt: new Date().toISOString()
+      await createCurriculum({
+        name: trimmed,
+        code: '',
+        level: 'Beginner',
+        duration: 0,
+        totalSessions: 0,
+        sessionDuration: 0,
+        tuitionFee: 0,
+        status: 'Active',
       });
-      setCurriculumList(prev => [...prev, name.trim()].sort());
+      setCurriculumList((prev) => [...prev, trimmed].sort());
     } catch (err) {
       console.error('Error saving curriculum:', err);
     }
@@ -171,40 +187,44 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
 
   useEffect(() => {
     const fetchDropdownData = async () => {
-      const staffSnap = await getDocs(collection(db, 'staff'));
-      const staff = staffSnap.docs.map(d => ({
-        id: d.id,
-        name: d.data().name || '',
-        position: d.data().position || '',
-      }));
-      setStaffList(staff);
+      try {
+        const [staff, centers, classes] = await Promise.all([
+          StaffService.getStaff(),
+          getCenters(),
+          ClassService.getClasses(),
+        ]);
 
-      const roomsSnap = await getDocs(collection(db, 'rooms'));
-      const rooms = roomsSnap.docs.map(d => ({
-        id: d.id,
-        name: d.data().name || d.data().roomName || d.id,
-      }));
-      setRoomList(rooms);
+        setStaffList(
+          staff.map((s) => ({
+            id: s.id,
+            name: s.name || '',
+            position: s.position || '',
+          }))
+        );
 
-      const centersSnap = await getDocs(collection(db, 'centers'));
-      const centers = centersSnap.docs
-        .filter(d => d.data().status === 'Active')
-        .map(d => ({
-          id: d.id,
-          name: d.data().name || '',
-        }));
-      setCenterList(centers);
+        setCenterList(
+          centers
+            .filter((c) => c.status === 'Active')
+            .map((c) => ({
+              id: c.id || c.name,
+              name: c.name,
+            }))
+        );
 
-      // Fetch all classes for room conflict validation
-      const classesSnap = await getDocs(collection(db, 'classes'));
-      const classes = classesSnap.docs.map(d => ({
-        id: d.id,
-        name: d.data().name || '',
-        room: d.data().room || '',
-        schedule: d.data().schedule || '',
-        scheduleDays: d.data().scheduleDays || [],
-      }));
-      setAllClasses(classes);
+        setAllClasses(
+          classes.map((c) => ({
+            id: c.id,
+            room: c.room || '',
+            schedule: c.schedule || '',
+            scheduleDays: (c as any).scheduleDays || [],
+          }))
+        );
+
+        // Phòng học — chưa migrate Supabase
+        setRoomList([]);
+      } catch (err) {
+        console.error('Error fetching dropdown data:', err);
+      }
     };
     fetchDropdownData();
   }, []);
@@ -216,15 +236,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       s.position?.toLowerCase().includes('gv việt') ||
       s.position?.toLowerCase().includes('giáo viên') ||
       s.position?.toLowerCase() === 'giáo viên'
-    );
-    return filtered.length > 0 ? filtered : staffList;
-  }, [staffList]);
-
-  const foreignTeachers = useMemo(() => {
-    const filtered = staffList.filter(s =>
-      s.position?.toLowerCase().includes('nước ngoài') ||
-      s.position?.toLowerCase().includes('gv ngoại') ||
-      s.position?.toLowerCase().includes('foreign')
     );
     return filtered.length > 0 ? filtered : staffList;
   }, [staffList]);
@@ -242,15 +253,25 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     { value: 'CN', label: 'Chủ nhật' },
   ];
 
-  // Time options
-  const timeOptions = [
-    '07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00',
-    '13:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00',
-    '17:30', '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00'
-  ];
-
   // Parse existing schedule when editing
   useEffect(() => {
+    if (classData?.scheduleDetails && classData.scheduleDetails.length > 0) {
+      const sortedDetails = [...classData.scheduleDetails].sort((a, b) => {
+        const aValue = a.dayOfWeek === 'CN' ? 8 : parseInt(a.dayOfWeek || '0', 10);
+        const bValue = b.dayOfWeek === 'CN' ? 8 : parseInt(b.dayOfWeek || '0', 10);
+        return aValue - bValue;
+      });
+      const firstDetail = sortedDetails[0];
+
+      setFormData(prev => ({
+        ...prev,
+        scheduleStartTime: firstDetail?.startTime || prev.scheduleStartTime,
+        scheduleEndTime: firstDetail?.endTime || prev.scheduleEndTime,
+        scheduleDays: sortedDetails.map(detail => detail.dayOfWeek),
+      }));
+      return;
+    }
+
     if (classData?.schedule) {
       const match = classData.schedule.match(/(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s*(.*)/);
       if (match) {
@@ -284,10 +305,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       updates.teacherStartTime = formData.scheduleStartTime;
       updates.teacherEndTime = formData.scheduleEndTime;
     }
-    if (formData.foreignTeacher && !formData.foreignTeacherStartTime) {
-      updates.foreignTeacherStartTime = formData.scheduleStartTime;
-      updates.foreignTeacherEndTime = formData.scheduleEndTime;
-    }
     if (formData.assistant && !formData.assistantStartTime) {
       updates.assistantStartTime = formData.scheduleStartTime;
       updates.assistantEndTime = formData.scheduleEndTime;
@@ -297,14 +314,13 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     }
   }, [formData.scheduleStartTime]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-calculate student counts from Firebase
+  // Auto-calculate student counts from Supabase
   useEffect(() => {
     const fetchStudentCounts = async () => {
       if (!classData?.id && !classData?.name) return;
 
       try {
-        const studentsSnap = await getDocs(collection(db, 'students'));
-        const allStudents = studentsSnap.docs.map(d => d.data());
+        const allStudents = await StudentService.getStudents();
 
         const classStudents = allStudents.filter((s: any) =>
           s.classId === classData?.id ||
@@ -352,6 +368,66 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
   // Day label helper
   const getDayLabel = (day: string) => day === 'CN' ? 'Chủ nhật' : `Thứ ${day}`;
 
+  const isTimeWithinClassTime = (startTime: string, endTime: string, classStartTime: string, classEndTime: string) => {
+    const toMinutes = (time: string) => {
+      const [hours, minutes] = time.split(':').map(Number);
+      return hours * 60 + minutes;
+    };
+    if (!startTime || !endTime || !classStartTime || !classEndTime) return false;
+    return toMinutes(startTime) >= toMinutes(classStartTime)
+      && toMinutes(endTime) <= toMinutes(classEndTime)
+      && toMinutes(startTime) < toMinutes(endTime);
+  };
+
+  const getRoleTimeWithinClassTime = (
+    roleStartTime: string | undefined,
+    roleEndTime: string | undefined,
+    classStartTime: string,
+    classEndTime: string
+  ) => {
+    if (roleStartTime && roleEndTime && isTimeWithinClassTime(roleStartTime, roleEndTime, classStartTime, classEndTime)) {
+      return { startTime: roleStartTime, endTime: roleEndTime };
+    }
+    return { startTime: classStartTime, endTime: classEndTime };
+  };
+
+  const normalizeDayScheduleConfig = (day: string, config?: Partial<DayScheduleConfig>): DayScheduleConfig => {
+    const startTime = config?.startTime || formData.scheduleStartTime || '18:00';
+    const endTime = config?.endTime || formData.scheduleEndTime || '19:30';
+    const teacherTime = getRoleTimeWithinClassTime(
+      config?.teacherStartTime ?? formData.teacherStartTime,
+      config?.teacherEndTime ?? formData.teacherEndTime,
+      startTime,
+      endTime
+    );
+    const assistantTime = getRoleTimeWithinClassTime(
+      config?.assistantStartTime ?? formData.assistantStartTime,
+      config?.assistantEndTime ?? formData.assistantEndTime,
+      startTime,
+      endTime
+    );
+
+    return {
+      dayOfWeek: day,
+      dayLabel: getDayLabel(day),
+      startTime,
+      endTime,
+      room: config?.room ?? formData.room ?? '',
+      teacher: config?.teacher ?? formData.teacher ?? '',
+      teacherStartTime: teacherTime.startTime,
+      teacherEndTime: teacherTime.endTime,
+      teacherDuration: calcMinutesBetween(teacherTime.startTime, teacherTime.endTime),
+      assistant: config?.assistant ?? formData.assistant ?? '',
+      assistantStartTime: assistantTime.startTime,
+      assistantEndTime: assistantTime.endTime,
+      assistantDuration: calcMinutesBetween(assistantTime.startTime, assistantTime.endTime),
+      foreignTeacher: config?.foreignTeacher ?? formData.foreignTeacher ?? '',
+      foreignTeacherStartTime: config?.foreignTeacherStartTime,
+      foreignTeacherEndTime: config?.foreignTeacherEndTime,
+      foreignTeacherDuration: config?.foreignTeacherDuration,
+    };
+  };
+
   // Toggle day selection
   const toggleDay = (day: string) => {
     const isRemoving = formData.scheduleDays.includes(day);
@@ -367,37 +443,17 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
           }),
     }));
 
-    if (useDetailedSchedule) {
-      if (isRemoving) {
-        setScheduleDetailsByDay(prev => {
-          const newDetails = { ...prev };
-          delete newDetails[day];
-          return newDetails;
-        });
-      } else {
-        setScheduleDetailsByDay(prev => ({
-          ...prev,
-          [day]: {
-            dayOfWeek: day,
-            dayLabel: getDayLabel(day),
-            startTime: formData.scheduleStartTime || '18:00',
-            endTime: formData.scheduleEndTime || '19:30',
-            room: formData.room || '',
-            teacher: formData.teacher || '',
-            teacherDuration: 90,
-            teacherStartTime: formData.teacherStartTime || formData.scheduleStartTime || '18:00',
-            teacherEndTime: formData.teacherEndTime || formData.scheduleEndTime || '19:30',
-            assistant: '',
-            assistantDuration: 0,
-            assistantStartTime: formData.scheduleStartTime || '18:00',
-            assistantEndTime: formData.scheduleEndTime || '19:30',
-            foreignTeacher: '',
-            foreignTeacherDuration: 0,
-            foreignTeacherStartTime: formData.scheduleStartTime || '18:00',
-            foreignTeacherEndTime: formData.scheduleEndTime || '19:30',
-          }
-        }));
-      }
+    if (isRemoving) {
+      setScheduleDetailsByDay(prev => {
+        const newDetails = { ...prev };
+        delete newDetails[day];
+        return newDetails;
+      });
+    } else {
+      setScheduleDetailsByDay(prev => ({
+        ...prev,
+        [day]: normalizeDayScheduleConfig(day)
+      }));
     }
   };
 
@@ -412,6 +468,20 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     }));
   };
 
+  const updateDayClassTime = (day: string, field: 'startTime' | 'endTime', value: string) => {
+    setScheduleDetailsByDay(prev => {
+      const currentConfig = normalizeDayScheduleConfig(day, prev[day]);
+      const updatedConfig = {
+        ...currentConfig,
+        [field]: value,
+      };
+      return {
+        ...prev,
+        [day]: normalizeDayScheduleConfig(day, updatedConfig),
+      };
+    });
+  };
+
   // Copy settings from one day to all other days
   const copyToAllDays = (sourceDay: string) => {
     const source = scheduleDetailsByDay[sourceDay];
@@ -421,11 +491,11 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       const newDetails = { ...prev };
       formData.scheduleDays.forEach(day => {
         if (day !== sourceDay) {
-          newDetails[day] = {
+          newDetails[day] = normalizeDayScheduleConfig(day, {
             ...source,
             dayOfWeek: day,
             dayLabel: getDayLabel(day),
-          };
+          });
         }
       });
       return newDetails;
@@ -554,22 +624,20 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     e.preventDefault();
     setRoomConflictError(null);
 
-    // Check room conflict before submitting
+    // Keep conflict information visible, but allow saving so the timetable follows the latest class data.
     const conflictError = checkRoomConflict();
     if (conflictError) {
       setRoomConflictError(conflictError);
-      return;
     }
 
-    let schedule = formData.schedule;
-    if (formData.scheduleStartTime && formData.scheduleEndTime && formData.scheduleDays.length > 0) {
-      const daysStr = formData.scheduleDays.map(d => d === 'CN' ? 'Chủ nhật' : `Thứ ${d}`).join(', ');
-      schedule = `${formData.scheduleStartTime}-${formData.scheduleEndTime} ${daysStr}`;
-    }
-
-    const scheduleDetailsArray: DayScheduleConfig[] = useDetailedSchedule
-      ? formData.scheduleDays.map(day => scheduleDetailsByDay[day]).filter(Boolean)
-      : [];
+    const scheduleDetailsArray: DayScheduleConfig[] = formData.scheduleDays.map(day =>
+      normalizeDayScheduleConfig(day, scheduleDetailsByDay[day])
+    );
+    const schedule = scheduleDetailsArray.length > 0
+      ? scheduleDetailsArray
+          .map(detail => `${detail.startTime}-${detail.endTime} ${detail.dayLabel || getDayLabel(detail.dayOfWeek)}`)
+          .join('; ')
+      : formData.schedule;
 
     const submitData: any = {
       name: formData.name,
@@ -577,14 +645,14 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       ageGroup: formData.ageGroup,
       curriculum: formData.curriculum,
       progress: formData.progress,
-      // Explicitly include totalSessions even if it's 0 (unlimited)
       totalSessions: formData.totalSessions,
+      tuitionFee: formData.tuitionFee,
       schedule,
       scheduleDetails: scheduleDetailsArray.length > 0 ? scheduleDetailsArray : null,
       room: formData.room,
+      createdDate: formData.createdDate,
       startDate: formData.startDate,
-      // When totalSessions = 0 (unlimited), endDate should be null or empty
-      endDate: formData.totalSessions === 0 ? null : formData.endDate,
+      endDate: formData.endDate || null,
       status: formData.status,
       studentsCount: formData.studentsCount,
       trialStudents: formData.trialStudents,
@@ -605,9 +673,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       assistantEndTime: formData.assistantEndTime || null,
       color: formData.color >= 0 ? formData.color : undefined,
     };
-
-    console.log('[ClassFormModal] Submitting:', submitData);
-    console.log('[ClassFormModal] totalSessions value:', submitData.totalSessions, 'type:', typeof submitData.totalSessions);
     onSubmit(submitData);
   };
 
@@ -631,10 +696,13 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 overflow-y-auto max-h-[70vh]">
-          {/* Room conflict error */}
+          {/* Room conflict warning */}
           {roomConflictError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-              <strong>⚠️ Xung đột phòng học:</strong> {roomConflictError}
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+              <strong>⚠️ Trùng lịch/phòng:</strong> {roomConflictError}
+              <div className="mt-1 text-xs text-amber-700">
+                Hệ thống vẫn lưu lớp và cập nhật thời khóa biểu theo thông tin mới.
+              </div>
             </div>
           )}
 
@@ -719,21 +787,16 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
               </select>
             </div>
 
-            {/* GV Nước ngoài */}
+            {/* Học phí */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">GV Nước ngoài</label>
-              <select
-                value={formData.foreignTeacher}
-                onChange={(e) => setFormData({ ...formData, foreignTeacher: e.target.value, foreignTeacherEnabled: !!e.target.value })}
+              <label className="block text-sm font-medium text-gray-700 mb-1">Học phí (VNĐ)</label>
+              <input
+                type="text"
+                value={formatNumber(formData.tuitionFee)}
+                onChange={(e) => setFormData({ ...formData, tuitionFee: parseNumber(e.target.value) })}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
-              >
-                <option value="">-- Chọn GV nước ngoài --</option>
-                {foreignTeachers.length > 0 ? foreignTeachers.map(t => (
-                  <option key={t.id} value={t.name}>{t.name}</option>
-                )) : staffList.map(t => (
-                  <option key={t.id} value={t.name}>{t.name} ({t.position})</option>
-                ))}
-              </select>
+                placeholder="VD: 3.600.000"
+              />
             </div>
 
             {/* Độ tuổi */}
@@ -751,39 +814,11 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
               </select>
             </div>
 
-            {/* Lịch học */}
+            {/* Ngày học */}
             <div className="col-span-2">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Lịch học</label>
-              <div className="grid grid-cols-2 gap-3 mb-2">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Giờ bắt đầu</label>
-                  <select
-                    value={formData.scheduleStartTime}
-                    onChange={(e) => setFormData({ ...formData, scheduleStartTime: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 text-sm"
-                  >
-                    <option value="">-- Chọn --</option>
-                    {timeOptions.map(t => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Giờ kết thúc</label>
-                  <select
-                    value={formData.scheduleEndTime}
-                    onChange={(e) => setFormData({ ...formData, scheduleEndTime: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 text-sm"
-                  >
-                    <option value="">-- Chọn --</option>
-                    {timeOptions.map(t => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Ngày học</label>
+              
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Ngày học</label>
                 <div className="flex flex-wrap gap-2">
                   {daysOptions.map(day => (
                     <button
@@ -801,174 +836,14 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                   ))}
                 </div>
               </div>
-              {formData.scheduleStartTime && formData.scheduleEndTime && formData.scheduleDays.length > 0 && (
-                <p className="mt-2 text-xs text-green-600 font-medium">
-                  Lịch: {formData.scheduleStartTime}-{formData.scheduleEndTime} {formData.scheduleDays.map(d => d === 'CN' ? 'Chủ nhật' : `Thứ ${d}`).join(', ')}
-                </p>
-              )}
             </div>
 
             {/* Teacher allocation section */}
             <div className="col-span-2 border-t pt-4 mt-2">
-              <div className="flex items-center justify-between mb-3">
-                <label className="block text-sm font-medium text-gray-700">Phân bổ giáo viên</label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={useDetailedSchedule}
-                    onChange={(e) => {
-                      setUseDetailedSchedule(e.target.checked);
-                      if (e.target.checked && formData.scheduleDays.length > 0) {
-                        const newDetails: Record<string, DayScheduleConfig> = {};
-                        formData.scheduleDays.forEach(day => {
-                          newDetails[day] = {
-                            dayOfWeek: day,
-                            dayLabel: getDayLabel(day),
-                            startTime: formData.scheduleStartTime || '18:00',
-                            endTime: formData.scheduleEndTime || '19:30',
-                            room: formData.room || '',
-                            teacher: formData.teacher || '',
-                            teacherDuration: formData.teacherDuration || 90,
-                            teacherStartTime: formData.teacherStartTime || formData.scheduleStartTime || '18:00',
-                            teacherEndTime: formData.teacherEndTime || formData.scheduleEndTime || '19:30',
-                            assistant: formData.assistant || '',
-                            assistantDuration: formData.assistantDuration || 0,
-                            assistantStartTime: formData.assistantStartTime || formData.scheduleStartTime || '18:00',
-                            assistantEndTime: formData.assistantEndTime || formData.scheduleEndTime || '19:30',
-                            foreignTeacher: formData.foreignTeacher || '',
-                            foreignTeacherDuration: formData.foreignTeacherDuration || 0,
-                            foreignTeacherStartTime: formData.foreignTeacherStartTime || formData.scheduleStartTime || '18:00',
-                            foreignTeacherEndTime: formData.foreignTeacherEndTime || formData.scheduleEndTime || '19:30',
-                          };
-                        });
-                        setScheduleDetailsByDay(newDetails);
-                      }
-                    }}
-                    className="w-4 h-4 text-orange-600 rounded"
-                  />
-                  <span className="text-xs text-orange-600 font-medium">Cấu hình riêng từng ngày</span>
-                </label>
+              <div className="mb-3">
+                <label className="block text-sm font-medium text-gray-700">Lịch riêng từng ngày</label>
               </div>
 
-              {!useDetailedSchedule ? (
-                <div className="space-y-3">
-                  <p className="text-xs text-gray-500 mb-2">Áp dụng cho tất cả các buổi học</p>
-                  {/* GV VN */}
-                  <div className="flex items-center gap-3">
-                    <input type="checkbox" checked={formData.teacherEnabled} onChange={(e) => {
-                      const enabled = e.target.checked;
-                      if (enabled && !formData.teacherStartTime) {
-                        const st = formData.scheduleStartTime;
-                        const et = formData.scheduleEndTime;
-                        setFormData({ ...formData, teacherEnabled: true, teacherStartTime: st, teacherEndTime: et, teacherDuration: calcMinutesBetween(st, et) });
-                      } else {
-                        setFormData({ ...formData, teacherEnabled: enabled });
-                      }
-                    }} className="w-4 h-4 text-green-600 rounded" />
-                    <span className="text-sm text-gray-600 w-24">Giáo viên VN</span>
-                    <select value={formData.teacher} onChange={(e) => setFormData({ ...formData, teacher: e.target.value, teacherEnabled: !!e.target.value })} disabled={!formData.teacherEnabled} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100">
-                      <option value="">-- Chọn --</option>
-                      {vietnameseTeachers.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}
-                    </select>
-                    <input type="time" step={900} value={formData.teacherStartTime}
-                      onChange={(e) => {
-                        const start = e.target.value;
-                        const duration = calcMinutesBetween(start, formData.teacherEndTime);
-                        setFormData({ ...formData, teacherStartTime: start, teacherDuration: duration });
-                      }}
-                      disabled={!formData.teacherEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-400">-</span>
-                    <input type="time" step={900} value={formData.teacherEndTime}
-                      onChange={(e) => {
-                        const end = e.target.value;
-                        const duration = calcMinutesBetween(formData.teacherStartTime, end);
-                        setFormData({ ...formData, teacherEndTime: end, teacherDuration: duration });
-                      }}
-                      disabled={!formData.teacherEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-500 w-14 text-right">= {formData.teacherDuration || 0}p</span>
-                  </div>
-                  {/* GV NN */}
-                  <div className="flex items-center gap-3">
-                    <input type="checkbox" checked={formData.foreignTeacherEnabled} onChange={(e) => {
-                      const enabled = e.target.checked;
-                      if (enabled && !formData.foreignTeacherStartTime) {
-                        const st = formData.scheduleStartTime;
-                        const et = formData.scheduleEndTime;
-                        setFormData({ ...formData, foreignTeacherEnabled: true, foreignTeacherStartTime: st, foreignTeacherEndTime: et, foreignTeacherDuration: calcMinutesBetween(st, et) });
-                      } else {
-                        setFormData({ ...formData, foreignTeacherEnabled: enabled });
-                      }
-                    }} className="w-4 h-4 text-purple-600 rounded" />
-                    <span className="text-sm text-gray-600 w-24">GV Nước ngoài</span>
-                    <select value={formData.foreignTeacher} onChange={(e) => setFormData({ ...formData, foreignTeacher: e.target.value, foreignTeacherEnabled: !!e.target.value })} disabled={!formData.foreignTeacherEnabled} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100">
-                      <option value="">-- Chọn --</option>
-                      {foreignTeachers.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}
-                    </select>
-                    <input type="time" step={900} value={formData.foreignTeacherStartTime}
-                      onChange={(e) => {
-                        const start = e.target.value;
-                        const duration = calcMinutesBetween(start, formData.foreignTeacherEndTime);
-                        setFormData({ ...formData, foreignTeacherStartTime: start, foreignTeacherDuration: duration });
-                      }}
-                      disabled={!formData.foreignTeacherEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-400">-</span>
-                    <input type="time" step={900} value={formData.foreignTeacherEndTime}
-                      onChange={(e) => {
-                        const end = e.target.value;
-                        const duration = calcMinutesBetween(formData.foreignTeacherStartTime, end);
-                        setFormData({ ...formData, foreignTeacherEndTime: end, foreignTeacherDuration: duration });
-                      }}
-                      disabled={!formData.foreignTeacherEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-500 w-14 text-right">= {formData.foreignTeacherDuration || 0}p</span>
-                  </div>
-                  {/* Trợ giảng */}
-                  <div className="flex items-center gap-3">
-                    <input type="checkbox" checked={formData.assistantEnabled} onChange={(e) => {
-                      const enabled = e.target.checked;
-                      if (enabled && !formData.assistantStartTime) {
-                        const st = formData.scheduleStartTime;
-                        const et = formData.scheduleEndTime;
-                        setFormData({ ...formData, assistantEnabled: true, assistantStartTime: st, assistantEndTime: et, assistantDuration: calcMinutesBetween(st, et) });
-                      } else {
-                        setFormData({ ...formData, assistantEnabled: enabled });
-                      }
-                    }} className="w-4 h-4 text-blue-600 rounded" />
-                    <span className="text-sm text-gray-600 w-24">Trợ giảng</span>
-                    <select value={formData.assistant} onChange={(e) => setFormData({ ...formData, assistant: e.target.value, assistantEnabled: !!e.target.value })} disabled={!formData.assistantEnabled} className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100">
-                      <option value="">-- Chọn --</option>
-                      {assistants.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}
-                    </select>
-                    <input type="time" step={900} value={formData.assistantStartTime}
-                      onChange={(e) => {
-                        const start = e.target.value;
-                        const duration = calcMinutesBetween(start, formData.assistantEndTime);
-                        setFormData({ ...formData, assistantStartTime: start, assistantDuration: duration });
-                      }}
-                      disabled={!formData.assistantEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-400">-</span>
-                    <input type="time" step={900} value={formData.assistantEndTime}
-                      onChange={(e) => {
-                        const end = e.target.value;
-                        const duration = calcMinutesBetween(formData.assistantStartTime, end);
-                        setFormData({ ...formData, assistantEndTime: end, assistantDuration: duration });
-                      }}
-                      disabled={!formData.assistantEnabled}
-                      className="w-24 px-2 py-1.5 border border-gray-300 rounded-lg text-sm disabled:bg-gray-100"
-                    />
-                    <span className="text-xs text-gray-500 w-14 text-right">= {formData.assistantDuration || 0}p</span>
-                  </div>
-                </div>
-              ) : (
                 <div className="space-y-4">
                   {formData.scheduleDays.length === 0 ? (
                     <p className="text-xs text-orange-500 italic">Vui lòng chọn ngày học ở trên trước</p>
@@ -976,18 +851,7 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                     <>
                       <p className="text-xs text-gray-500">Cấu hình giáo viên cho từng ngày học</p>
                       {formData.scheduleDays.map((day, idx) => {
-                        const dayConfig = scheduleDetailsByDay[day] || {
-                          dayOfWeek: day, dayLabel: getDayLabel(day), startTime: formData.scheduleStartTime, endTime: formData.scheduleEndTime,
-                          room: '', teacher: '', teacherDuration: 0,
-                          teacherStartTime: formData.teacherStartTime || formData.scheduleStartTime || '18:00',
-                          teacherEndTime: formData.teacherEndTime || formData.scheduleEndTime || '19:30',
-                          assistant: '', assistantDuration: 0,
-                          assistantStartTime: formData.scheduleStartTime || '18:00',
-                          assistantEndTime: formData.scheduleEndTime || '19:30',
-                          foreignTeacher: '', foreignTeacherDuration: 0,
-                          foreignTeacherStartTime: formData.scheduleStartTime || '18:00',
-                          foreignTeacherEndTime: formData.scheduleEndTime || '19:30',
-                        };
+                        const dayConfig = normalizeDayScheduleConfig(day, scheduleDetailsByDay[day]);
                         return (
                           <div key={day} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
                             <div className="flex items-center justify-between mb-2">
@@ -999,7 +863,17 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                                 <button type="button" onClick={() => copyToAllDays(day)} className="text-xs text-blue-600 hover:text-blue-700 font-medium">Áp dụng cho tất cả</button>
                               )}
                             </div>
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className="grid grid-cols-2 gap-2 mb-2">
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">Giờ bắt đầu</label>
+                                <input type="time" step={900} value={dayConfig.startTime || ''} onChange={(e) => updateDayClassTime(day, 'startTime', e.target.value)} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs" />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">Giờ kết thúc</label>
+                                <input type="time" step={900} value={dayConfig.endTime || ''} onChange={(e) => updateDayClassTime(day, 'endTime', e.target.value)} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs" />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
                               <div>
                                 <label className="block text-xs text-green-600 mb-1">GV Việt Nam</label>
                                 <select value={dayConfig.teacher || ''} onChange={(e) => updateDaySchedule(day, 'teacher', e.target.value)} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
@@ -1012,21 +886,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                                     <span className="text-xs text-gray-400">-</span>
                                     <input type="time" step={900} value={dayConfig.teacherEndTime || ''} onChange={(e) => { const end = e.target.value; updateDaySchedule(day, 'teacherEndTime', end); updateDaySchedule(day, 'teacherDuration', calcMinutesBetween(dayConfig.teacherStartTime || '', end)); }} className="flex-1 min-w-0 px-1 py-1 border border-gray-300 rounded text-xs" />
                                     <span className="text-xs text-gray-500 whitespace-nowrap">{dayConfig.teacherDuration || 0}p</span>
-                                  </div>
-                                )}
-                              </div>
-                              <div>
-                                <label className="block text-xs text-purple-600 mb-1">GV Nước ngoài</label>
-                                <select value={dayConfig.foreignTeacher || ''} onChange={(e) => updateDaySchedule(day, 'foreignTeacher', e.target.value)} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs">
-                                  <option value="">-- Không --</option>
-                                  {foreignTeachers.map(t => (<option key={t.id} value={t.name}>{t.name}</option>))}
-                                </select>
-                                {dayConfig.foreignTeacher && (
-                                  <div className="flex items-center gap-1 mt-1">
-                                    <input type="time" step={900} value={dayConfig.foreignTeacherStartTime || ''} onChange={(e) => { const s = e.target.value; updateDaySchedule(day, 'foreignTeacherStartTime', s); updateDaySchedule(day, 'foreignTeacherDuration', calcMinutesBetween(s, dayConfig.foreignTeacherEndTime || '')); }} className="flex-1 min-w-0 px-1 py-1 border border-gray-300 rounded text-xs" />
-                                    <span className="text-xs text-gray-400">-</span>
-                                    <input type="time" step={900} value={dayConfig.foreignTeacherEndTime || ''} onChange={(e) => { const end = e.target.value; updateDaySchedule(day, 'foreignTeacherEndTime', end); updateDaySchedule(day, 'foreignTeacherDuration', calcMinutesBetween(dayConfig.foreignTeacherStartTime || '', end)); }} className="flex-1 min-w-0 px-1 py-1 border border-gray-300 rounded text-xs" />
-                                    <span className="text-xs text-gray-500 whitespace-nowrap">{dayConfig.foreignTeacherDuration || 0}p</span>
                                   </div>
                                 )}
                               </div>
@@ -1059,7 +918,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                     </>
                   )}
                 </div>
-              )}
             </div>
 
             {/* Phòng học */}
@@ -1099,22 +957,6 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
               )}
             </div>
 
-            {/* Tổng số buổi học */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">Tổng số buổi học</label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={formData.totalSessions === 0} onChange={(e) => { if (e.target.checked) { setFormData({ ...formData, totalSessions: 0, progress: 'Auto không giới hạn' }); } else { setFormData({ ...formData, totalSessions: 48, progress: '0/48' }); } }} className="w-4 h-4 text-green-600 rounded" />
-                  <span className="text-xs text-green-600 font-medium">Auto không giới hạn</span>
-                </label>
-              </div>
-              {formData.totalSessions === 0 ? (
-                <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">Auto không giới hạn số buổi</div>
-              ) : (
-                <input type="number" value={formData.totalSessions} onChange={(e) => { const total = parseInt(e.target.value) || 48; setFormData({ ...formData, totalSessions: total, progress: `0/${total}` }); }} min={1} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" placeholder="VD: 48" />
-              )}
-            </div>
-
             {/* Ngày bắt đầu */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Ngày bắt đầu</label>
@@ -1124,7 +966,7 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
             {/* Ngày kết thúc */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Ngày kết thúc {formData.endDate && formData.scheduleDays.length > 0 && (<span className="text-xs text-green-600 font-normal ml-1">(tự động tính)</span>)}</label>
-              <input type="date" value={formData.endDate} onChange={(e) => setFormData({ ...formData, endDate: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 bg-gray-50" readOnly={formData.scheduleDays.length > 0 && formData.totalSessions > 0} />
+              <input type="date" value={formData.endDate} onChange={(e) => setFormData({ ...formData, endDate: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 bg-gray-50" />
               {formData.startDate && formData.endDate && (<p className="mt-1 text-xs text-gray-500">Từ {new Date(formData.startDate).toLocaleDateString('vi-VN')} đến {new Date(formData.endDate).toLocaleDateString('vi-VN')}</p>)}
             </div>
 
@@ -1137,6 +979,17 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
             </div>
 
             {/* Color Picker */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Ngay tao lop</label>
+              <input
+                type="date"
+                value={formData.createdDate}
+                onChange={(e) => setFormData({ ...formData, createdDate: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+              />
+              <p className="mt-1 text-xs text-gray-500">Dung de doi chieu tinh hinh hoc phi theo ngay/thang.</p>
+            </div>
+
             <div className="col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-2">Màu hiển thị trên TKB<span className="text-xs text-gray-400 font-normal ml-2">(nhấn để chọn, bỏ chọn = tự động)</span></label>
               <div className="flex flex-wrap gap-2">

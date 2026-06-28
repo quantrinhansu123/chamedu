@@ -13,8 +13,6 @@ import { getFeedbacks, FeedbackRecord } from '../src/services/feedbackService';
 import { ClassModel } from '../types';
 import { createEnrollment } from '../src/services/enrollmentService';
 import { recalculateStudentStatus } from '../src/services/attendanceService';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { ImportExportButtons } from '../components/ImportExportButtons';
 import { PortalDropdown } from '../components/portal-dropdown';
 import { STUDENT_FIELDS, STUDENT_MAPPING, prepareStudentExport } from '../src/utils/excelUtils';
@@ -37,9 +35,8 @@ import { ModalPortal } from '@/components/modal-portal';
 
 // Constants for table column count
 const STUDENT_TABLE_COLUMNS = {
-  // Thêm 2 cột: "Tổng số buổi" và "Buổi đã học"
-  base: 17,
-  withDropoutReason: 18
+  base: 10,
+  withDropoutReason: 11
 };
 
 interface StudentManagerProps {
@@ -117,9 +114,10 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
     const fetchCenters = async () => {
       try {
         const data = await getCenters();
-        setCenters(data);
+        setCenters(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('Error fetching centers:', err);
+        setCenters([]);
       }
     };
     fetchCenters();
@@ -681,15 +679,8 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                     <th className="px-4 py-3 bg-gray-50">Học viên</th>
                     <th className="px-4 py-3 bg-gray-50">Phụ huynh</th>
                     <th className="px-4 py-3 bg-gray-50">Lớp học</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Gói học</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Đã học (cũ)</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Tổng số buổi</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Buổi đã học</th>
                     <th className="px-4 py-3 bg-gray-50 text-center">Đã điểm danh</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Còn lại</th>
                     <th className="px-4 py-3 bg-gray-50 text-center">Ngày BĐ</th>
-                    <th className="px-4 py-3 bg-gray-50 text-center">Ngày KT</th>
-                    <th className="px-4 py-3 bg-gray-50">HĐ gần nhất</th>
                     <th className="px-4 py-3 bg-gray-50">Trạng thái</th>
                     {filterStatus === StudentStatus.DROPPED && (
                       <th className="px-4 py-3 bg-gray-50">Lý do nghỉ học</th>
@@ -757,75 +748,14 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                     <td className="px-4 py-3 text-xs text-gray-600">
                        <p>{student.class || '---'}</p>
                     </td>
-                    {/* Gói học (theo dữ liệu hiện tại / import) */}
-                    <td className="px-4 py-3 text-center">
-                       <span className="font-semibold text-blue-600">
-                         {getStudentSessionData(student).registered}
-                       </span>
-                    </td>
-                    {/* Đã học (cũ) - legacy system */}
-                    <td className="px-4 py-3 text-center">
-                       <span className="font-semibold text-gray-600">
-                         {getStudentSessionData(student).legacyAttended}
-                       </span>
-                    </td>
-                    {/* Tổng số buổi của lớp hiện tại (ưu tiên classProgress) */}
-                    <td className="px-4 py-3 text-center">
-                       <span className="font-semibold text-emerald-600">
-                         {getStudentSessionData(student).registeredAll}
-                       </span>
-                    </td>
-                    {/* Buổi đã học: nếu có classProgress thì chỉ tính theo lớp hiện tại */}
-                    <td className="px-4 py-3 text-center">
-                       {(() => {
-                         const { totalAttended } = getStudentSessionData(student);
-                         return (
-                           <span className="font-semibold text-purple-600">
-                             {totalAttended}
-                           </span>
-                         );
-                       })()}
-                    </td>
                     {/* Đã điểm danh (hệ thống mới) */}
                     <td className="px-4 py-3 text-center">
                        <span className="font-semibold text-green-600">
                          {getStudentSessionData(student).attendedAll}
                        </span>
                     </td>
-                    {/* Còn lại theo logic lớp hiện tại */}
-                    <td className="px-4 py-3 text-center">
-                       {(() => {
-                         const { registeredAll, attendedAll } = getStudentSessionData(student);
-                         const remaining = registeredAll - attendedAll;
-                         return (
-                           <span className={`font-bold ${remaining < 0 ? 'text-red-600' : remaining <= 5 ? 'text-orange-500' : 'text-gray-700'}`}>
-                             {remaining}
-                             {remaining < 0 && <span className="text-xs ml-1">(nợ)</span>}
-                           </span>
-                         );
-                       })()}
-                    </td>
                     <td className="px-4 py-3 text-center text-xs text-gray-600">
                        {student.startDate ? new Date(student.startDate).toLocaleDateString('vi-VN') : '---'}
-                    </td>
-                    <td className="px-4 py-3 text-center text-xs text-gray-600">
-                       {student.expectedEndDate ? new Date(student.expectedEndDate).toLocaleDateString('vi-VN') : '---'}
-                    </td>
-                    <td className="px-4 py-3 text-xs">
-                       {studentLatestContract[student.id] ? (
-                         <button
-                           onClick={(e) => {
-                             e.stopPropagation();
-                             navigate(`/finance/contracts?view=${studentLatestContract[student.id].id}`);
-                           }}
-                           className="text-indigo-600 hover:text-indigo-800 hover:underline font-medium"
-                           title={`Xem hợp đồng ${studentLatestContract[student.id].code}`}
-                         >
-                           {studentLatestContract[student.id].code}
-                         </button>
-                       ) : (
-                         <span className="text-gray-400">---</span>
-                       )}
                     </td>
                     <td className="px-4 py-3">
                         <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold text-white ${
@@ -957,17 +887,7 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                                     <Pause size={14} className="text-orange-500" />
                                     Bảo lưu
                                   </button>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      navigate('/finance/contracts/create', { state: { studentId: student.id } });
-                                      setActionDropdownId(null);
-                                    }}
-                                    className="w-full px-4 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2"
-                                  >
-                                    <DollarSign size={14} className="text-emerald-600" />
-                                    Thanh toán
-                                  </button>
+
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1208,21 +1128,6 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                   </div>
                 </button>
                 
-                {/* Option 2: Tạo hợp đồng */}
-                <button
-                  onClick={handlePostCreateContract}
-                  className="w-full p-4 border-2 border-gray-200 rounded-xl hover:border-green-400 hover:bg-green-50 transition-all text-left group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center group-hover:bg-green-200">
-                      <DollarSign className="text-green-600" size={20} />
-                    </div>
-                    <div>
-                      <p className="font-semibold text-gray-900">Tạo hợp đồng mới</p>
-                      <p className="text-sm text-gray-500">Tạo hợp đồng với đầy đủ thông tin thanh toán</p>
-                    </div>
-                  </div>
-                </button>
               </div>
             </div>
             
@@ -1502,4 +1407,3 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
     </div>
   );
 };
-

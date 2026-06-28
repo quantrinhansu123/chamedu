@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * MonthlyCommentTab Component
  *
@@ -9,10 +10,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User, Save, MessageSquare } from 'lucide-react';
-import { collection, query, where, onSnapshot, addDoc, updateDoc, doc } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
+import { User, Save, MessageSquare, Printer } from 'lucide-react';
 import { Student, MonthlyComment } from '../../../../types';
+import { printMonthlyCommentSlip } from '../../../utils/commentSlipPrint';
 
 export interface MonthlyCommentTabProps {
   students: Student[];
@@ -47,7 +47,7 @@ export const MonthlyCommentTab: React.FC<MonthlyCommentTabProps> = ({
 
     setLoading(true);
     const q = query(
-      collection(db, 'monthlyComments'),
+      collection(null as any /* firebase removed */, 'monthlyComments'),
       where('classId', '==', classId),
       where('month', '==', month),
       where('year', '==', year)
@@ -93,12 +93,12 @@ export const MonthlyCommentTab: React.FC<MonthlyCommentTabProps> = ({
     try {
       const existing = existingComments.find(c => c.studentId === studentId);
       if (existing) {
-        await updateDoc(doc(db, 'monthlyComments', existing.id), {
+        await updateDoc(doc(null as any /* firebase removed */, 'monthlyComments', existing.id), {
           teacherComment: comment,
           updatedAt: new Date().toISOString()
         });
       } else if (comment.trim()) {
-        await addDoc(collection(db, 'monthlyComments'), {
+        await addDoc(collection(null as any /* firebase removed */, 'monthlyComments'), {
           studentId,
           studentName: student.fullName,
           classId,
@@ -126,12 +126,12 @@ export const MonthlyCommentTab: React.FC<MonthlyCommentTabProps> = ({
         const existing = existingComments.find(c => c.studentId === student.id);
 
         if (existing) {
-          await updateDoc(doc(db, 'monthlyComments', existing.id), {
+          await updateDoc(doc(null as any /* firebase removed */, 'monthlyComments', existing.id), {
             teacherComment: comment,
             updatedAt: new Date().toISOString()
           });
         } else if (comment.trim()) {
-          await addDoc(collection(db, 'monthlyComments'), {
+          await addDoc(collection(null as any /* firebase removed */, 'monthlyComments'), {
             studentId: student.id,
             studentName: student.fullName,
             classId,
@@ -150,6 +150,17 @@ export const MonthlyCommentTab: React.FC<MonthlyCommentTabProps> = ({
     } finally {
       setSavingAll(false);
     }
+  };
+
+  const printCommentSlip = (student: Student, comment: string) => {
+    printMonthlyCommentSlip({
+      studentName: student.fullName || '',
+      studentCode: student.code || '',
+      className,
+      month,
+      year,
+      comment,
+    });
   };
 
   if (loading) {
@@ -211,14 +222,23 @@ export const MonthlyCommentTab: React.FC<MonthlyCommentTabProps> = ({
                 <User size={16} className="text-gray-400" />
                 <span className="font-medium text-gray-800">{student.fullName}</span>
                 <span className="text-sm text-gray-500">({student.code})</span>
+                <button
+                  type="button"
+                  onClick={() => printCommentSlip(student, comments[student.id] || '')}
+                  className="ml-auto px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium flex items-center gap-1"
+                  title="In phiếu nhận xét"
+                >
+                  <Printer size={14} />
+                  In phiếu
+                </button>
                 {existing && (
-                  <span className="ml-auto text-xs text-green-600 flex items-center gap-1">
+                  <span className="text-xs text-green-600 flex items-center gap-1">
                     <span className="w-2 h-2 bg-green-500 rounded-full"></span>
                     Đã lưu
                   </span>
                 )}
                 {isSaving && (
-                  <span className="ml-auto text-xs text-indigo-600 flex items-center gap-1">
+                  <span className="text-xs text-indigo-600 flex items-center gap-1">
                     <div className="animate-spin rounded-full h-3 w-3 border border-indigo-600 border-t-transparent"></div>
                     Đang lưu...
                   </span>

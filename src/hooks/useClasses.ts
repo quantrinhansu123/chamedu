@@ -1,18 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, query, where, Timestamp } from 'firebase/firestore';
-import { db } from '../config/firebase';
 import { ClassModel, ClassStatus } from '../../types';
 import { ClassService } from '../services/classService';
-
-// Helper to convert Timestamp to date string
-const timestampToDateStr = (ts: any): string => {
-  if (!ts) return '';
-  if (ts instanceof Timestamp || (ts && typeof ts.toDate === 'function')) {
-    return ts.toDate().toISOString().split('T')[0];
-  }
-  if (typeof ts === 'string') return ts;
-  return '';
-};
 
 export const useClasses = (filters?: {
   status?: ClassStatus;
@@ -23,34 +11,25 @@ export const useClasses = (filters?: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Realtime listener
+  const fetchClasses = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
+    try {
+      if (!silent) setLoading(true);
+      setError(null);
+      const data = await ClassService.getClasses();
+      setAllClasses(data);
+    } catch (err: any) {
+      setError(err.message || 'Lỗi khi tải danh sách lớp học');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  };
+
+  // Initial load + lightweight polling refresh (silent — không unmount UI)
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-
-    const unsubscribe = onSnapshot(
-      collection(db, 'classes'),
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => {
-          const docData = doc.data();
-          return {
-            id: doc.id,
-            ...docData,
-            // Convert Timestamp to string for dates
-            startDate: timestampToDateStr(docData.startDate),
-            endDate: timestampToDateStr(docData.endDate),
-          };
-        }) as ClassModel[];
-        setAllClasses(data);
-        setLoading(false);
-      },
-      (err) => {
-        setError(err.message || 'Lỗi khi tải danh sách lớp học');
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
+    fetchClasses();
+    const timer = setInterval(() => fetchClasses({ silent: true }), 15000);
+    return () => clearInterval(timer);
   }, []);
 
   // Client-side filtering
@@ -74,8 +53,8 @@ export const useClasses = (filters?: {
     return filtered;
   }, [allClasses, filters?.status, filters?.teacherId, filters?.searchTerm]);
 
-  const refreshClasses = () => {
-    // No-op for realtime - data auto-updates
+  const refreshClasses = async () => {
+    await fetchClasses({ silent: true });
   };
 
   const createClass = async (classData: Omit<ClassModel, 'id'>) => {

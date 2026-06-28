@@ -1,11 +1,11 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Home, Plus, Edit, Trash2, X } from 'lucide-react';
 import { useRooms } from '../src/hooks/useRooms';
 import { Room } from '../types';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { ModalPortal } from '@/components/modal-portal';
+import { getCenters } from '../src/services/centerService';
 
 export const RoomManager: React.FC = () => {
   const { rooms: rawRooms, loading, createRoom, updateRoom, deleteRoom } = useRooms();
@@ -20,21 +20,16 @@ export const RoomManager: React.FC = () => {
     notes: '',
   });
 
-  // Fetch centers from Firestore
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
-        const centers = centersSnap.docs
-          .filter(d => d.data().status === 'Active')
-          .map(d => ({
-            id: d.id,
-            name: d.data().name || '',
-          }));
+        const data = await getCenters();
+        const centers = data
+          .filter((c) => c.status === 'Active')
+          .map((c) => ({ id: c.id!, name: c.name }));
         setCenterList(centers);
-        // Set default branch to first center if exists
         if (centers.length > 0 && !formData.branch) {
-          setFormData(prev => ({ ...prev, branch: centers[0].name }));
+          setFormData((prev) => ({ ...prev, branch: centers[0].name }));
         }
       } catch (err) {
         console.error('Error fetching centers:', err);

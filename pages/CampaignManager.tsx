@@ -206,6 +206,19 @@ export const CampaignManager: React.FC = () => {
                     {campaign.description && (
                       <div className="text-xs text-gray-500 truncate max-w-xs">{campaign.description}</div>
                     )}
+                    {campaign.campaignDetails && campaign.campaignDetails.length > 0 && (
+                      <div className="mt-2 space-y-1">
+                        {campaign.campaignDetails.slice(0, 2).map((item, index) => (
+                          <div key={`${item.action}-${index}`} className="text-xs text-gray-600">
+                            <span className="font-semibold text-orange-700">{item.action || 'Hành động'}:</span>{' '}
+                            <span>{item.detail || '-'}</span>
+                          </div>
+                        ))}
+                        {campaign.campaignDetails.length > 2 && (
+                          <div className="text-xs text-gray-400">+{campaign.campaignDetails.length - 2} chi tiết khác</div>
+                        )}
+                      </div>
+                    )}
                     {campaign.scriptUrl && (
                       <a
                         href={campaign.scriptUrl}
@@ -330,6 +343,9 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
   const [formData, setFormData] = useState({
     name: campaign?.name || '',
     description: campaign?.description || '',
+    campaignDetails: campaign?.campaignDetails?.length
+      ? campaign.campaignDetails
+      : [{ action: '', detail: '' }],
     startDate: campaign?.startDate || today,
     endDate: campaign?.endDate || '',
     targetCount: campaign?.targetCount || 0,
@@ -339,6 +355,32 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
   });
   const [loading, setLoading] = useState(false);
 
+  const updateCampaignDetail = (index: number, field: 'action' | 'detail', value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      campaignDetails: prev.campaignDetails.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: value } : item
+      ),
+    }));
+  };
+
+  const addCampaignDetail = () => {
+    setFormData((prev) => ({
+      ...prev,
+      campaignDetails: [...prev.campaignDetails, { action: '', detail: '' }],
+    }));
+  };
+
+  const removeCampaignDetail = (index: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      campaignDetails:
+        prev.campaignDetails.length === 1
+          ? [{ action: '', detail: '' }]
+          : prev.campaignDetails.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.startDate || !formData.endDate) {
@@ -347,7 +389,15 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
     }
     setLoading(true);
     try {
-      await onSubmit(formData);
+      await onSubmit({
+        ...formData,
+        campaignDetails: formData.campaignDetails
+          .map((item) => ({
+            action: item.action.trim(),
+            detail: item.detail.trim(),
+          }))
+          .filter((item) => item.action || item.detail),
+      });
     } finally {
       setLoading(false);
     }
@@ -356,7 +406,7 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
   return (
     <ModalPortal>
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-md w-full">
+      <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
           <h3 className="text-xl font-bold text-gray-800">
             {campaign ? 'Sửa chiến dịch' : 'Tạo chiến dịch mới'}
@@ -366,7 +416,7 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Tên chiến dịch <span className="text-red-500">*</span>
@@ -389,6 +439,64 @@ const CampaignModal: React.FC<CampaignModalProps> = ({ campaign, onClose, onSubm
               rows={2}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
             />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <label className="block text-sm font-medium text-gray-700">Chi tiết chiến dịch</label>
+              <button
+                type="button"
+                onClick={addCampaignDetail}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-orange-700 bg-orange-50 border border-orange-200 rounded-lg hover:bg-orange-100"
+              >
+                <Plus size={14} /> Thêm dòng
+              </button>
+            </div>
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left w-1/3">Hành động</th>
+                    <th className="px-3 py-2 text-left">Chi tiết</th>
+                    <th className="px-2 py-2 w-10" aria-label="Xóa dòng"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {formData.campaignDetails.map((item, index) => (
+                    <tr key={index}>
+                      <td className="p-2 align-top">
+                        <input
+                          type="text"
+                          value={item.action}
+                          onChange={(e) => updateCampaignDetail(index, 'action', e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                          placeholder="VD: Gọi điện"
+                        />
+                      </td>
+                      <td className="p-2 align-top">
+                        <textarea
+                          value={item.detail}
+                          onChange={(e) => updateCampaignDetail(index, 'detail', e.target.value)}
+                          rows={2}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-500"
+                          placeholder="Nội dung, kịch bản, ghi chú triển khai..."
+                        />
+                      </td>
+                      <td className="p-2 align-top">
+                        <button
+                          type="button"
+                          onClick={() => removeCampaignDetail(index)}
+                          className="p-2 text-gray-400 hover:text-red-600"
+                          title="Xóa dòng"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">

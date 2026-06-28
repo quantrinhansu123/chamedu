@@ -1,13 +1,42 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { BookOpen, Plus, X, Save, Trash2, Settings, FileText, AlertCircle } from 'lucide-react';
+import { BookOpen, Plus, X, Save, Trash2, Settings, FileText, AlertCircle, Pencil, Printer } from 'lucide-react';
+import { printExerciseNotes } from '../src/utils/commentSlipPrint';
+import { useSearchParams } from 'react-router-dom';
 import { ModalPortal } from '@/components/modal-portal';
 import { useClasses } from '../src/hooks/useClasses';
 import { useStudents } from '../src/hooks/useStudents';
 import { useAuth } from '../src/hooks/useAuth';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useHolidays } from '../src/hooks/useHolidays';
-import { collection, addDoc, updateDoc, doc, getDocs, query, where, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
+import { getSessionsByClass, type ClassSession } from '../src/services/sessionService';
+import {
+  getHomeworkRecord,
+  getHomeworkStatuses,
+  saveHomeworkRecord,
+  saveHomeworkStatuses,
+} from '../src/services/homeworkService';
+import {
+  createLearningAssignment,
+  createLearningExerciseType,
+  createLearningMaterial,
+  deleteLearningExerciseType,
+  getLearningMaterialsData,
+  updateLearningClassGroup,
+  updateLearningGrade,
+  updateLearningGradeBand,
+  updateLearningExerciseType,
+  type LearningAssignment,
+  type LearningClassGroup,
+  type LearningExerciseType,
+  type LearningGrade,
+  type LearningGradeBand,
+  type LearningMaterial,
+} from '../src/services/learningMaterialService';
+import {
+  parseExerciseNotes,
+  serializeExerciseNotes,
+  type ExerciseNoteItem,
+} from '../src/utils/learningMaterialNotes';
 import { ClassModel, Student } from '../types';
 
 // Default homework statuses with colors
@@ -57,19 +86,1485 @@ interface HomeworkSession {
   createdBy: string;
 }
 
+const SCHEDULE_DETAIL_DAY_INDEX: Record<string, number> = {
+  CN: 0,
+  '2': 1,
+  '3': 2,
+  '4': 3,
+  '5': 4,
+  '6': 5,
+  '7': 6,
+};
+
+const DAY_NAMES = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+
+const parseLocalDate = (value?: string): Date => {
+  if (!value) return new Date();
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return new Date();
+  return new Date(year, month - 1, day);
+};
+
+const formatLocalDate = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const normalizeText = (value: string): string =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+
+const parseScheduleDays = (schedule = ''): number[] => {
+  const normalized = normalizeText(schedule);
+  const days = new Set<number>();
+  let match: RegExpExecArray | null;
+  const thuPattern = /thu\s*(hai|2|ba|3|tu|4|nam|5|sau|6|bay|7)/g;
+  const dayMap: Record<string, number> = {
+    hai: 1,
+    '2': 1,
+    ba: 2,
+    '3': 2,
+    tu: 3,
+    '4': 3,
+    nam: 4,
+    '5': 4,
+    sau: 5,
+    '6': 5,
+    bay: 6,
+    '7': 6,
+  };
+
+  while ((match = thuPattern.exec(normalized)) !== null) {
+    days.add(dayMap[match[1]]);
+  }
+
+  if (normalized.includes('chu nhat') || /\bcn\b/.test(normalized)) {
+    days.add(0);
+  }
+
+  return Array.from(days).sort();
+};
+
+const parseScheduleTime = (schedule = ''): string | undefined => {
+  const match = schedule.match(/(\d{1,2})(?::|h)(\d{0,2})\s*[-–]\s*(\d{1,2})(?::|h)(\d{0,2})/i);
+  if (!match) return undefined;
+  const formatTime = (hour: string, minute: string) =>
+    `${hour.padStart(2, '0')}:${(minute || '00').padStart(2, '0')}`;
+  return `${formatTime(match[1], match[2])}-${formatTime(match[3], match[4])}`;
+};
+
+const withStableSessionIds = (classId: string, sessions: ClassSession[]): ClassSession[] =>
+  sessions
+    .map((session) => ({
+      ...session,
+      id: session.id || `schedule_${classId}_${session.sessionNumber}_${session.date}`,
+    }))
+    .sort((a, b) => a.sessionNumber - b.sessionNumber);
+
+const buildSessionsFromScheduleDetails = (classData?: ClassModel): ClassSession[] => {
+  if (!classData?.id || !classData.scheduleDetails?.length) return [];
+
+  const detailsByDay = new Map(
+    classData.scheduleDetails
+      .map((detail) => [SCHEDULE_DETAIL_DAY_INDEX[detail.dayOfWeek], detail] as const)
+      .filter(([dayIndex]) => typeof dayIndex === 'number')
+  );
+
+  if (detailsByDay.size === 0) return [];
+
+  const fromDate = parseLocalDate(classData.startDate);
+  const maxSessions = classData.totalSessions || 120;
+  const endDate = classData.endDate
+    ? parseLocalDate(classData.endDate)
+    : new Date(fromDate.getTime() + 365 * 24 * 60 * 60 * 1000);
+  const sessions: ClassSession[] = [];
+  const currentDate = new Date(fromDate);
+  let sessionNumber = 1;
+
+  while (currentDate <= endDate && sessionNumber <= maxSessions) {
+    const detail = detailsByDay.get(currentDate.getDay());
+
+    if (detail) {
+      const date = formatLocalDate(currentDate);
+      sessions.push({
+        id: `schedule_${classData.id}_${sessionNumber}_${date}`,
+        classId: classData.id,
+        className: classData.name,
+        sessionNumber,
+        date,
+        dayOfWeek: detail.dayLabel || DAY_NAMES[currentDate.getDay()],
+        time: detail.startTime && detail.endTime ? `${detail.startTime}-${detail.endTime}` : undefined,
+        room: detail.room || classData.room,
+        teacherId: detail.teacherId || classData.teacherId,
+        teacherName: detail.teacher || classData.teacher,
+        status: 'Chưa học',
+        createdAt: new Date().toISOString(),
+      });
+      sessionNumber++;
+    }
+
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return sessions;
+};
+
+const buildSessionsFromScheduleText = (classData?: ClassModel): ClassSession[] => {
+  if (!classData?.id || !classData.schedule) return [];
+
+  const scheduleDays = parseScheduleDays(classData.schedule);
+  if (scheduleDays.length === 0) return [];
+
+  const fromDate = parseLocalDate(classData.startDate);
+  const maxSessions = classData.totalSessions || 120;
+  const endDate = classData.endDate
+    ? parseLocalDate(classData.endDate)
+    : new Date(fromDate.getTime() + 365 * 24 * 60 * 60 * 1000);
+  const time = parseScheduleTime(classData.schedule);
+  const sessions: ClassSession[] = [];
+  const currentDate = new Date(fromDate);
+  let sessionNumber = 1;
+
+  while (currentDate <= endDate && sessionNumber <= maxSessions) {
+    const dayOfWeek = currentDate.getDay();
+
+    if (scheduleDays.includes(dayOfWeek)) {
+      const date = formatLocalDate(currentDate);
+      sessions.push({
+        id: `schedule_${classData.id}_${sessionNumber}_${date}`,
+        classId: classData.id,
+        className: classData.name,
+        sessionNumber,
+        date,
+        dayOfWeek: DAY_NAMES[dayOfWeek],
+        time,
+        room: classData.room,
+        teacherId: classData.teacherId,
+        teacherName: classData.teacher,
+        status: 'Chưa học',
+        createdAt: new Date().toISOString(),
+      });
+      sessionNumber++;
+    }
+
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return sessions;
+};
+
+const mergeStoredSessionsIntoSchedule = (
+  scheduleSessions: ClassSession[],
+  storedSessions: ClassSession[]
+): ClassSession[] => {
+  const storedByDate = new Map(storedSessions.map((session) => [session.date, session]));
+  const storedByNumber = new Map(storedSessions.map((session) => [session.sessionNumber, session]));
+
+  return scheduleSessions.map((scheduleSession) => {
+    const stored = storedByDate.get(scheduleSession.date) || storedByNumber.get(scheduleSession.sessionNumber);
+    if (!stored) return scheduleSession;
+
+    return {
+      ...scheduleSession,
+      id: stored.id || scheduleSession.id,
+      status: stored.status || scheduleSession.status,
+      attendanceId: stored.attendanceId,
+      holidayId: stored.holidayId,
+      holidayName: stored.holidayName,
+      note: stored.note,
+      createdAt: stored.createdAt || scheduleSession.createdAt,
+      updatedAt: stored.updatedAt,
+    };
+  });
+};
+
+const getClassSessionsWithScheduleFallback = async (classData?: ClassModel): Promise<ClassSession[]> => {
+  if (!classData?.id) return [];
+
+  const storedSessions = await getSessionsByClass(classData.id);
+  const detailSessions = buildSessionsFromScheduleDetails(classData);
+  const scheduleSessions = detailSessions.length > 0 ? detailSessions : buildSessionsFromScheduleText(classData);
+
+  if (scheduleSessions.length > 0) {
+    return mergeStoredSessionsIntoSchedule(scheduleSessions, storedSessions);
+  }
+
+  return withStableSessionIds(classData.id, storedSessions);
+};
+
+const dbErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'object' && error && 'message' in error) {
+    return String((error as { message?: unknown }).message);
+  }
+  return 'Không tải được dữ liệu học liệu.';
+};
+
+const StatPill: React.FC<{ label: string; value: number | string }> = ({ label, value }) => (
+  <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+    <p className="text-xs text-gray-500">{label}</p>
+    <p className="text-lg font-semibold text-gray-900">{value}</p>
+  </div>
+);
+
+const EmptyPanel: React.FC<{ title: string; description: string }> = ({ title, description }) => (
+  <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center">
+    <FileText size={28} className="mx-auto mb-3 text-gray-300" />
+    <p className="font-medium text-gray-700">{title}</p>
+    <p className="mt-1 text-sm text-gray-500">{description}</p>
+  </div>
+);
+
+const LearningMaterialsTab: React.FC<{ assignedByName: string }> = ({ assignedByName }) => {
+  const [gradeBands, setGradeBands] = useState<LearningGradeBand[]>([]);
+  const [grades, setGrades] = useState<LearningGrade[]>([]);
+  const [classGroups, setClassGroups] = useState<LearningClassGroup[]>([]);
+  const [exerciseTypes, setExerciseTypes] = useState<LearningExerciseType[]>([]);
+  const [materials, setMaterials] = useState<LearningMaterial[]>([]);
+  const [assignments, setAssignments] = useState<LearningAssignment[]>([]);
+  const [selectedBandId, setSelectedBandId] = useState('');
+  const [selectedGradeId, setSelectedGradeId] = useState('');
+  const [selectedClassGroupId, setSelectedClassGroupId] = useState('');
+  const [selectedExerciseTypeId, setSelectedExerciseTypeId] = useState('');
+  const [selectedMaterialId, setSelectedMaterialId] = useState('');
+  const [loadingMaterials, setLoadingMaterials] = useState(true);
+  const [savingMaterial, setSavingMaterial] = useState(false);
+  const [materialsError, setMaterialsError] = useState('');
+  const [formMode, setFormMode] = useState<'exercise' | 'material' | 'assignment' | 'gradeBand' | 'grade' | 'classGroup' | null>(null);
+  const [editingGradeBandId, setEditingGradeBandId] = useState('');
+  const [editingGradeId, setEditingGradeId] = useState('');
+  const [editingClassGroupId, setEditingClassGroupId] = useState('');
+  const [editingExerciseTypeId, setEditingExerciseTypeId] = useState('');
+
+  const [exerciseForm, setExerciseForm] = useState({
+    title: '',
+    subject: 'Toán',
+    difficulty: 'Cơ bản',
+    exerciseCount: '0',
+    description: '',
+  });
+
+  const [materialForm, setMaterialForm] = useState({
+    title: '',
+    contentType: 'worksheet',
+    externalUrl: '',
+    fileUrl: '',
+    estimatedMinutes: '',
+    questionCount: '',
+  });
+
+  const [assignmentForm, setAssignmentForm] = useState({
+    dueDate: '',
+    assignedCount: '',
+    note: '',
+  });
+
+  const [exerciseNotes, setExerciseNotes] = useState<ExerciseNoteItem[]>([]);
+  const [selectedExerciseNoteIds, setSelectedExerciseNoteIds] = useState<Set<string>>(new Set());
+  const [savingExerciseNote, setSavingExerciseNote] = useState(false);
+
+  const [gradeBandForm, setGradeBandForm] = useState({
+    name: '',
+    description: '',
+    sortOrder: '0',
+  });
+
+  const [gradeForm, setGradeForm] = useState({
+    name: '',
+    gradeNumber: '',
+    sortOrder: '',
+  });
+
+  const [classGroupForm, setClassGroupForm] = useState({
+    code: '',
+    name: '',
+    teacherName: '',
+    studentCount: '',
+    sortOrder: '',
+  });
+
+  const loadLearningData = async () => {
+    setLoadingMaterials(true);
+    setMaterialsError('');
+    try {
+      const data = await getLearningMaterialsData();
+      setGradeBands(data.gradeBands);
+      setGrades(data.grades);
+      setClassGroups(data.classGroups);
+      setExerciseTypes(data.exerciseTypes);
+      setMaterials(data.materials);
+      setAssignments(data.assignments);
+      setSelectedBandId((current) => current || data.gradeBands[0]?.id || '');
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setLoadingMaterials(false);
+    }
+  };
+
+  useEffect(() => {
+    loadLearningData();
+  }, []);
+
+  const visibleGrades = useMemo(
+    () => grades.filter((grade) => grade.gradeBandId === selectedBandId),
+    [grades, selectedBandId]
+  );
+
+  const visibleClassGroups = useMemo(
+    () => classGroups.filter((group) => group.gradeId === selectedGradeId),
+    [classGroups, selectedGradeId]
+  );
+
+  const visibleExerciseTypes = useMemo(
+    () => exerciseTypes.filter((exercise) => exercise.gradeId === selectedGradeId),
+    [exerciseTypes, selectedGradeId]
+  );
+
+  const selectedClassGroup = useMemo(
+    () => classGroups.find((group) => group.id === selectedClassGroupId),
+    [classGroups, selectedClassGroupId]
+  );
+
+  const selectedExerciseType = useMemo(
+    () => exerciseTypes.find((exercise) => exercise.id === selectedExerciseTypeId),
+    [exerciseTypes, selectedExerciseTypeId]
+  );
+
+  const visibleMaterials = useMemo(
+    () => materials.filter((material) => material.exerciseTypeId === selectedExerciseTypeId),
+    [materials, selectedExerciseTypeId]
+  );
+
+  const visibleAssignments = useMemo(
+    () =>
+      assignments.filter((assignment) => {
+        if (selectedExerciseTypeId && assignment.exerciseTypeId !== selectedExerciseTypeId) return false;
+        if (selectedClassGroupId && assignment.classGroupId !== selectedClassGroupId) return false;
+        return true;
+      }),
+    [assignments, selectedClassGroupId, selectedExerciseTypeId]
+  );
+
+  useEffect(() => {
+    if (!selectedGradeId && visibleGrades[0]) {
+      setSelectedGradeId(visibleGrades[0].id);
+    }
+    if (selectedGradeId && !visibleGrades.some((grade) => grade.id === selectedGradeId)) {
+      setSelectedGradeId(visibleGrades[0]?.id || '');
+    }
+  }, [selectedGradeId, visibleGrades]);
+
+  useEffect(() => {
+    setSelectedClassGroupId((current) =>
+      visibleClassGroups.some((group) => group.id === current) ? current : visibleClassGroups[0]?.id || ''
+    );
+    setSelectedExerciseTypeId((current) =>
+      visibleExerciseTypes.some((exercise) => exercise.id === current) ? current : visibleExerciseTypes[0]?.id || ''
+    );
+  }, [visibleClassGroups, visibleExerciseTypes]);
+
+  useEffect(() => {
+    setSelectedMaterialId((current) =>
+      visibleMaterials.some((material) => material.id === current) ? current : visibleMaterials[0]?.id || ''
+    );
+  }, [visibleMaterials]);
+
+  useEffect(() => {
+    setExerciseNotes(parseExerciseNotes(selectedExerciseType?.description));
+    setSelectedExerciseNoteIds(new Set());
+  }, [selectedExerciseTypeId, selectedExerciseType?.description]);
+
+  const handleSaveExerciseNotes = async (notes = exerciseNotes) => {
+    if (!selectedExerciseType) return;
+    setSavingExerciseNote(true);
+    setMaterialsError('');
+    try {
+      await updateLearningExerciseType(selectedExerciseType.id, {
+        title: selectedExerciseType.title,
+        subject: selectedExerciseType.subject || 'Toán',
+        difficulty: selectedExerciseType.difficulty,
+        exerciseCount: selectedExerciseType.exerciseCount,
+        description: serializeExerciseNotes(notes) || undefined,
+      });
+      await loadLearningData();
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingExerciseNote(false);
+    }
+  };
+
+  const handleAddExerciseNote = () => {
+    setExerciseNotes((prev) => [...prev, { id: crypto.randomUUID(), title: '', content: '' }]);
+  };
+
+  const handleUpdateExerciseNote = (id: string, field: 'title' | 'content', value: string) => {
+    setExerciseNotes((prev) => prev.map((note) => (note.id === id ? { ...note, [field]: value } : note)));
+  };
+
+  const handleRemoveExerciseNote = async (id: string) => {
+    const nextNotes = exerciseNotes.filter((note) => note.id !== id);
+    setExerciseNotes(nextNotes);
+    setSelectedExerciseNoteIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    await handleSaveExerciseNotes(nextNotes);
+  };
+
+  const toggleExerciseNoteSelection = (id: string) => {
+    setSelectedExerciseNoteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllExerciseNotes = () => {
+    setSelectedExerciseNoteIds((prev) => {
+      if (prev.size === exerciseNotes.length && exerciseNotes.length > 0) {
+        return new Set();
+      }
+      return new Set(exerciseNotes.map((note) => note.id));
+    });
+  };
+
+  const handlePrintSelectedExerciseNotes = () => {
+    const selected = exerciseNotes.filter((note) => selectedExerciseNoteIds.has(note.id));
+    if (selected.length === 0) {
+      window.alert('Vui lòng tick chọn ít nhất một thẻ ghi chú để in.');
+      return;
+    }
+    const gradeName = grades.find((grade) => grade.id === selectedGradeId)?.name;
+    printExerciseNotes({
+      exerciseTypeTitle: selectedExerciseType?.title || 'Dạng bài',
+      gradeName,
+      notes: selected,
+    });
+  };
+
+  const submitExercise = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedGradeId || !exerciseForm.title.trim()) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      const input = {
+        title: exerciseForm.title,
+        subject: exerciseForm.subject,
+        difficulty: exerciseForm.difficulty,
+        exerciseCount: Number(exerciseForm.exerciseCount) || 0,
+        description: exerciseForm.description,
+      };
+      const saved = editingExerciseTypeId
+        ? await updateLearningExerciseType(editingExerciseTypeId, input)
+        : await createLearningExerciseType({ gradeId: selectedGradeId, ...input });
+      setFormMode(null);
+      setEditingExerciseTypeId('');
+      setExerciseForm({ title: '', subject: 'Toán', difficulty: 'Cơ bản', exerciseCount: '0', description: '' });
+      await loadLearningData();
+      setSelectedExerciseTypeId(saved.id);
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const openExerciseForm = (exercise?: LearningExerciseType) => {
+    setEditingExerciseTypeId(exercise?.id || '');
+    setExerciseForm(
+      exercise
+        ? {
+            title: exercise.title,
+            subject: exercise.subject || 'Toán',
+            difficulty: exercise.difficulty,
+            exerciseCount: String(exercise.exerciseCount),
+            description: exercise.description || '',
+          }
+        : { title: '', subject: 'Toán', difficulty: 'Cơ bản', exerciseCount: '0', description: '' }
+    );
+    setFormMode('exercise');
+  };
+
+  const handleDeleteExercise = async (exercise: LearningExerciseType) => {
+    if (!window.confirm(`Xóa dạng bài "${exercise.title}"?`)) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      await deleteLearningExerciseType(exercise.id);
+      if (selectedExerciseTypeId === exercise.id) setSelectedExerciseTypeId('');
+      await loadLearningData();
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const submitMaterial = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedExerciseTypeId || !materialForm.title.trim()) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      const created = await createLearningMaterial({
+        exerciseTypeId: selectedExerciseTypeId,
+        title: materialForm.title,
+        contentType: materialForm.contentType,
+        externalUrl: materialForm.externalUrl,
+        fileUrl: materialForm.fileUrl,
+        estimatedMinutes: Number(materialForm.estimatedMinutes) || undefined,
+        questionCount: Number(materialForm.questionCount) || undefined,
+      });
+      setFormMode(null);
+      setMaterialForm({
+        title: '',
+        contentType: 'worksheet',
+        externalUrl: '',
+        fileUrl: '',
+        estimatedMinutes: '',
+        questionCount: '',
+      });
+      await loadLearningData();
+      setSelectedMaterialId(created.id);
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const submitAssignment = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedExerciseType || !selectedClassGroup) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      await createLearningAssignment({
+        exerciseTypeId: selectedExerciseType.id,
+        materialId: selectedMaterialId || undefined,
+        classGroupId: selectedClassGroup.id,
+        classId: selectedClassGroup.classId || undefined,
+        className: selectedClassGroup.name,
+        targetName: `${selectedClassGroup.name} - ${selectedExerciseType.title}`,
+        assignedCount: Number(assignmentForm.assignedCount) || selectedClassGroup.studentCount,
+        dueDate: assignmentForm.dueDate || undefined,
+        assignedByName,
+        note: assignmentForm.note,
+      });
+      setFormMode(null);
+      setAssignmentForm({ dueDate: '', assignedCount: '', note: '' });
+      await loadLearningData();
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const openEditGradeBand = (band: LearningGradeBand) => {
+    setEditingGradeBandId(band.id);
+    setGradeBandForm({
+      name: band.name,
+      description: band.description || '',
+      sortOrder: String(band.sortOrder || 0),
+    });
+    setFormMode('gradeBand');
+  };
+
+  const openEditGrade = (grade: LearningGrade) => {
+    setEditingGradeId(grade.id);
+    setGradeForm({
+      name: grade.name,
+      gradeNumber: String(grade.gradeNumber),
+      sortOrder: String(grade.sortOrder || grade.gradeNumber),
+    });
+    setFormMode('grade');
+  };
+
+  const openEditClassGroup = (group: LearningClassGroup) => {
+    setEditingClassGroupId(group.id);
+    setClassGroupForm({
+      code: group.code,
+      name: group.name,
+      teacherName: group.teacherName || '',
+      studentCount: String(group.studentCount || 0),
+      sortOrder: String(group.sortOrder || 0),
+    });
+    setFormMode('classGroup');
+  };
+
+  const submitGradeBandEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingGradeBandId || !gradeBandForm.name.trim()) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      await updateLearningGradeBand(editingGradeBandId, {
+        name: gradeBandForm.name,
+        description: gradeBandForm.description,
+        sortOrder: Number(gradeBandForm.sortOrder) || 0,
+      });
+      setFormMode(null);
+      await loadLearningData();
+      setSelectedBandId(editingGradeBandId);
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const submitGradeEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingGradeId || !gradeForm.name.trim() || !gradeForm.gradeNumber) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      await updateLearningGrade(editingGradeId, {
+        name: gradeForm.name,
+        gradeNumber: Number(gradeForm.gradeNumber),
+        sortOrder: Number(gradeForm.sortOrder) || Number(gradeForm.gradeNumber),
+      });
+      setFormMode(null);
+      await loadLearningData();
+      setSelectedGradeId(editingGradeId);
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const submitClassGroupEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingClassGroupId || !classGroupForm.code.trim() || !classGroupForm.name.trim()) return;
+    setSavingMaterial(true);
+    setMaterialsError('');
+    try {
+      await updateLearningClassGroup(editingClassGroupId, {
+        code: classGroupForm.code,
+        name: classGroupForm.name,
+        teacherName: classGroupForm.teacherName,
+        studentCount: Number(classGroupForm.studentCount) || 0,
+        sortOrder: Number(classGroupForm.sortOrder) || 0,
+      });
+      setFormMode(null);
+      await loadLearningData();
+      setSelectedClassGroupId(editingClassGroupId);
+    } catch (error) {
+      setMaterialsError(dbErrorMessage(error));
+    } finally {
+      setSavingMaterial(false);
+    }
+  };
+
+  const openMaterialModal = () => {
+    if (!selectedExerciseTypeId) {
+      setFormMode('exercise');
+      return;
+    }
+    setFormMode('material');
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">Học liệu</h3>
+            <p className="text-sm text-gray-500">Dữ liệu lấy trực tiếp từ Supabase, không dùng mock prototype.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => openExerciseForm()}
+              disabled={!selectedGradeId}
+              className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={16} />
+              Thêm dạng bài
+            </button>
+            <button
+              type="button"
+              onClick={openMaterialModal}
+              disabled={!selectedGradeId}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Plus size={16} />
+              Thêm học liệu
+            </button>
+          </div>
+        </div>
+
+        {materialsError && (
+          <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">Không tải/lưu được học liệu</p>
+              <p>{materialsError}</p>
+              <p className="mt-1 text-red-600">Nếu báo thiếu bảng, hãy chạy file docs/supabase-homework-materials-migration.sql trong Supabase SQL Editor.</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {loadingMaterials ? (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-10 text-center text-gray-500">
+          Đang tải học liệu...
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="space-y-4">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <p className="mb-3 text-sm font-semibold text-gray-800">Khối</p>
+              <div className="space-y-2">
+                {gradeBands.map((band) => (
+                  <div
+                    key={band.id}
+                    className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      selectedBandId === band.id
+                        ? 'border-purple-300 bg-purple-50 text-purple-700'
+                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <button type="button" onClick={() => setSelectedBandId(band.id)} className="min-w-0 flex-1 text-left">
+                      <span className="font-medium">{band.name}</span>
+                      {band.description && <span className="block text-xs text-gray-500">{band.description}</span>}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditGradeBand(band)}
+                      title="Sửa khối"
+                      className="mt-0.5 rounded-md p-1.5 text-gray-400 hover:bg-white hover:text-purple-700"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <p className="mb-3 text-sm font-semibold text-gray-800">Lớp</p>
+              <div className="grid grid-cols-3 gap-2">
+                {visibleGrades.map((grade) => (
+                  <div
+                    key={grade.id}
+                    className={`flex items-center justify-between rounded-lg border px-2 py-2 text-sm font-medium ${
+                      selectedGradeId === grade.id
+                        ? 'border-blue-300 bg-blue-50 text-blue-700'
+                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <button type="button" onClick={() => setSelectedGradeId(grade.id)} className="min-w-0 flex-1 px-1 text-center">
+                      {grade.gradeNumber}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditGrade(grade)}
+                      title="Sửa lớp"
+                      className="rounded-md p-1 text-gray-400 hover:bg-white hover:text-blue-700"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+              <p className="mb-3 text-sm font-semibold text-gray-800">Lớp học</p>
+              <div className="space-y-2">
+                {visibleClassGroups.map((group) => (
+                  <div
+                    key={group.id}
+                    className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
+                      selectedClassGroupId === group.id
+                        ? 'border-green-300 bg-green-50 text-green-700'
+                        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    <button type="button" onClick={() => setSelectedClassGroupId(group.id)} className="min-w-0 flex-1 text-left">
+                      <span className="font-medium">{group.name}</span>
+                      <span className="block text-xs text-gray-500">{group.teacherName || 'Chưa có giáo viên'} · {group.studentCount} học viên</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditClassGroup(group)}
+                      title="Sửa lớp học"
+                      className="mt-0.5 rounded-md p-1.5 text-gray-400 hover:bg-white hover:text-green-700"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatPill label="Dạng bài" value={visibleExerciseTypes.length} />
+              <StatPill label="Học liệu" value={visibleMaterials.length} />
+              <StatPill label="Lớp học" value={visibleClassGroups.length} />
+              <StatPill label="Đã giao" value={visibleAssignments.length} />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-gray-800">Dạng bài</p>
+                  <button
+                    type="button"
+                    onClick={() => openExerciseForm()}
+                    disabled={!selectedGradeId}
+                    className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <Plus size={14} />
+                    Thêm
+                  </button>
+                </div>
+                <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
+                  {visibleExerciseTypes.length === 0 ? (
+                    <EmptyPanel title="Chưa có dạng bài" description="Bấm Thêm để tạo dạng bài cho lớp đang chọn." />
+                  ) : (
+                    visibleExerciseTypes.map((exercise) => (
+                      <div
+                        key={exercise.id}
+                        className={`flex w-full items-start gap-2 rounded-lg border p-3 ${
+                          selectedExerciseTypeId === exercise.id
+                            ? 'border-purple-300 bg-purple-50'
+                            : 'border-gray-200 bg-white hover:bg-gray-50'
+                        }`}
+                      >
+                        <button type="button" onClick={() => setSelectedExerciseTypeId(exercise.id)} className="min-w-0 flex-1 text-left">
+                          <p className="font-medium text-gray-900">{exercise.title}</p>
+                          <p className="mt-1 text-xs text-gray-500">{exercise.subject || 'Chưa có môn'} · {exercise.difficulty} · {exercise.exerciseCount} bài</p>
+                        </button>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" onClick={() => openExerciseForm(exercise)} className="rounded p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600" title="Sửa dạng bài">
+                            <Pencil size={15} />
+                          </button>
+                          <button type="button" onClick={() => handleDeleteExercise(exercise)} disabled={savingMaterial} className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50" title="Xóa dạng bài">
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm text-gray-500">Chi tiết học liệu</p>
+                    <h4 className="text-lg font-bold text-gray-900">{selectedExerciseType?.title || 'Chọn dạng bài'}</h4>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setFormMode('material')}
+                      disabled={!selectedExerciseTypeId}
+                      className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Plus size={16} />
+                      Thêm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormMode('assignment')}
+                      disabled={!selectedExerciseTypeId || !selectedClassGroupId}
+                      className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-3 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Save size={16} />
+                      Giao bài
+                    </button>
+                  </div>
+                </div>
+
+                {selectedExerciseType ? (
+                  <div className="space-y-4">
+                    <div className="overflow-x-auto rounded-lg border border-gray-200">
+                      <table className="w-full min-w-[680px] text-sm">
+                        <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                          <tr>
+                            <th className="w-12 px-3 py-3 text-center">Chọn</th>
+                            <th className="px-3 py-3 text-left">Tên học liệu</th>
+                            <th className="px-3 py-3 text-left">Loại</th>
+                            <th className="px-3 py-3 text-right">Số câu</th>
+                            <th className="px-3 py-3 text-right">Thời lượng</th>
+                            <th className="px-3 py-3 text-left">Liên kết</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {visibleMaterials.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                                Chưa có học liệu. Bấm Thêm để lưu file hoặc link học liệu cho dạng bài này.
+                              </td>
+                            </tr>
+                          ) : visibleMaterials.map((material) => {
+                            const materialUrl = material.externalUrl || material.fileUrl;
+                            return (
+                              <tr
+                                key={material.id}
+                                onClick={() => setSelectedMaterialId(material.id)}
+                                className={`cursor-pointer ${
+                                  selectedMaterialId === material.id ? 'bg-blue-50' : 'hover:bg-gray-50'
+                                }`}
+                              >
+                                <td className="px-3 py-3 text-center">
+                                  <input
+                                    type="radio"
+                                    name="selectedMaterial"
+                                    checked={selectedMaterialId === material.id}
+                                    onChange={() => setSelectedMaterialId(material.id)}
+                                    className="h-4 w-4 text-blue-600"
+                                  />
+                                </td>
+                                <td className="px-3 py-3 font-medium text-gray-900">{material.title}</td>
+                                <td className="px-3 py-3 text-gray-600">{material.contentType}</td>
+                                <td className="px-3 py-3 text-right text-gray-600">{material.questionCount || '-'}</td>
+                                <td className="px-3 py-3 text-right text-gray-600">
+                                  {material.estimatedMinutes ? `${material.estimatedMinutes} phút` : '-'}
+                                </td>
+                                <td className="max-w-56 px-3 py-3">
+                                  {materialUrl ? (
+                                    <a
+                                      href={materialUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      onClick={(event) => event.stopPropagation()}
+                                      className="block truncate font-medium text-blue-600 hover:underline"
+                                    >
+                                      Mở liên kết
+                                    </a>
+                                  ) : (
+                                    <span className="text-gray-400">-</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200">
+                      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3">
+                        <p className="text-sm font-semibold text-gray-800">Ghi chú</p>
+                        <div className="flex items-center gap-2">
+                          {savingExerciseNote && (
+                            <span className="text-xs text-indigo-600">Đang lưu...</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={handlePrintSelectedExerciseNotes}
+                            disabled={selectedExerciseNoteIds.size === 0}
+                            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Printer size={14} />
+                            In ({selectedExerciseNoteIds.size})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleAddExerciseNote}
+                            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                          >
+                            <Plus size={14} />
+                            Thêm
+                          </button>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[560px] text-sm">
+                          <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                            <tr>
+                              <th className="w-12 px-3 py-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={
+                                    exerciseNotes.length > 0 &&
+                                    selectedExerciseNoteIds.size === exerciseNotes.length
+                                  }
+                                  onChange={toggleAllExerciseNotes}
+                                  className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                  title="Chọn tất cả"
+                                />
+                              </th>
+                              <th className="w-48 px-4 py-3 text-left">Tên</th>
+                              <th className="px-4 py-3 text-left">Nội dung</th>
+                              <th className="w-12 px-3 py-3 text-center"></th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {exerciseNotes.length === 0 ? (
+                              <tr>
+                                <td colSpan={4} className="px-4 py-6 text-center text-gray-500">
+                                  Chưa có ghi chú. Bấm Thêm để tạo dòng mới.
+                                </td>
+                              </tr>
+                            ) : (
+                              exerciseNotes.map((note) => (
+                                <tr
+                                  key={note.id}
+                                  className={`align-top ${selectedExerciseNoteIds.has(note.id) ? 'bg-purple-50/50' : ''}`}
+                                >
+                                  <td className="px-3 py-3 text-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedExerciseNoteIds.has(note.id)}
+                                      onChange={() => toggleExerciseNoteSelection(note.id)}
+                                      className="h-4 w-4 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <input
+                                      type="text"
+                                      value={note.title}
+                                      onChange={(event) =>
+                                        handleUpdateExerciseNote(note.id, 'title', event.target.value)
+                                      }
+                                      onBlur={() => handleSaveExerciseNotes()}
+                                      placeholder="Tên ghi chú..."
+                                      className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <textarea
+                                      value={note.content}
+                                      onChange={(event) =>
+                                        handleUpdateExerciseNote(note.id, 'content', event.target.value)
+                                      }
+                                      onBlur={() => handleSaveExerciseNotes()}
+                                      placeholder="Nội dung... (Enter để xuống dòng)"
+                                      rows={2}
+                                      className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                                    />
+                                  </td>
+                                  <td className="px-3 py-3 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveExerciseNote(note.id)}
+                                      className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                                      title="Xóa dòng"
+                                    >
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyPanel title="Chọn hoặc thêm dạng bài" description="Dạng bài là nhóm học liệu có thể giao cho lớp." />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {formMode && (
+        <ModalPortal>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white shadow-xl">
+              <div className="flex items-center justify-between border-b border-gray-200 p-4">
+                <h3 className="text-lg font-bold text-gray-900">
+                  {formMode === 'exercise'
+                    ? editingExerciseTypeId ? 'Sửa dạng bài' : 'Thêm dạng bài'
+                    : formMode === 'material'
+                      ? 'Thêm học liệu'
+                      : formMode === 'assignment'
+                        ? 'Giao bài'
+                        : formMode === 'gradeBand'
+                          ? 'Sửa khối'
+                          : formMode === 'grade'
+                            ? 'Sửa lớp'
+                            : 'Sửa lớp học'}
+                </h3>
+                <button type="button" onClick={() => setFormMode(null)} className="text-gray-400 hover:text-gray-600">
+                  <X size={22} />
+                </button>
+              </div>
+
+              {formMode === 'gradeBand' && (
+                <form onSubmit={submitGradeBandEdit} className="space-y-4 p-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Tên khối</label>
+                    <input
+                      value={gradeBandForm.name}
+                      onChange={(event) => setGradeBandForm({ ...gradeBandForm, name: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
+                    <input
+                      value={gradeBandForm.description}
+                      onChange={(event) => setGradeBandForm({ ...gradeBandForm, description: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      placeholder="Ví dụ: Lớp 1 - 5"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Thứ tự</label>
+                    <input
+                      type="number"
+                      value={gradeBandForm.sortOrder}
+                      onChange={(event) => setGradeBandForm({ ...gradeBandForm, sortOrder: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial} className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Lưu
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {formMode === 'grade' && (
+                <form onSubmit={submitGradeEdit} className="space-y-4 p-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Tên lớp</label>
+                      <input
+                        value={gradeForm.name}
+                        onChange={(event) => setGradeForm({ ...gradeForm, name: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số lớp</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="12"
+                        value={gradeForm.gradeNumber}
+                        onChange={(event) => setGradeForm({ ...gradeForm, gradeNumber: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Thứ tự</label>
+                    <input
+                      type="number"
+                      value={gradeForm.sortOrder}
+                      onChange={(event) => setGradeForm({ ...gradeForm, sortOrder: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial} className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Lưu
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {formMode === 'classGroup' && (
+                <form onSubmit={submitClassGroupEdit} className="space-y-4 p-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Mã lớp</label>
+                      <input
+                        value={classGroupForm.code}
+                        onChange={(event) => setClassGroupForm({ ...classGroupForm, code: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Tên lớp học</label>
+                      <input
+                        value={classGroupForm.name}
+                        onChange={(event) => setClassGroupForm({ ...classGroupForm, name: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Giáo viên</label>
+                    <input
+                      value={classGroupForm.teacherName}
+                      onChange={(event) => setClassGroupForm({ ...classGroupForm, teacherName: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số học viên</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={classGroupForm.studentCount}
+                        onChange={(event) => setClassGroupForm({ ...classGroupForm, studentCount: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Thứ tự</label>
+                      <input
+                        type="number"
+                        value={classGroupForm.sortOrder}
+                        onChange={(event) => setClassGroupForm({ ...classGroupForm, sortOrder: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial} className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Lưu
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {formMode === 'exercise' && (
+                <form onSubmit={submitExercise} className="space-y-4 p-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Tên dạng bài</label>
+                    <input
+                      value={exerciseForm.title}
+                      onChange={(event) => setExerciseForm({ ...exerciseForm, title: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      placeholder="Ví dụ: Phép cộng trong phạm vi 10"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Môn</label>
+                      <input
+                        value={exerciseForm.subject}
+                        onChange={(event) => setExerciseForm({ ...exerciseForm, subject: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Độ khó</label>
+                      <select
+                        value={exerciseForm.difficulty}
+                        onChange={(event) => setExerciseForm({ ...exerciseForm, difficulty: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      >
+                        <option>Cơ bản</option>
+                        <option>Vận dụng</option>
+                        <option>Nâng cao</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số bài</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={exerciseForm.exerciseCount}
+                        onChange={(event) => setExerciseForm({ ...exerciseForm, exerciseCount: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Mô tả</label>
+                    <textarea
+                      value={exerciseForm.description}
+                      onChange={(event) => setExerciseForm({ ...exerciseForm, description: event.target.value })}
+                      className="min-h-24 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-purple-500 focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial} className="inline-flex items-center gap-2 rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Lưu
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {formMode === 'material' && (
+                <form onSubmit={submitMaterial} className="space-y-4 p-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Tên học liệu</label>
+                    <input
+                      value={materialForm.title}
+                      onChange={(event) => setMaterialForm({ ...materialForm, title: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      placeholder="Ví dụ: Phiếu bài tập số 1"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Loại</label>
+                      <select
+                        value={materialForm.contentType}
+                        onChange={(event) => setMaterialForm({ ...materialForm, contentType: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="worksheet">Phiếu bài tập</option>
+                        <option value="video">Video</option>
+                        <option value="link">Link</option>
+                        <option value="document">Tài liệu</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số phút</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={materialForm.estimatedMinutes}
+                        onChange={(event) => setMaterialForm({ ...materialForm, estimatedMinutes: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số câu</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={materialForm.questionCount}
+                        onChange={(event) => setMaterialForm({ ...materialForm, questionCount: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Link ngoài</label>
+                    <input
+                      value={materialForm.externalUrl}
+                      onChange={(event) => setMaterialForm({ ...materialForm, externalUrl: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">File URL</label>
+                    <input
+                      value={materialForm.fileUrl}
+                      onChange={(event) => setMaterialForm({ ...materialForm, fileUrl: event.target.value })}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial || !selectedExerciseTypeId} className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Lưu
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {formMode === 'assignment' && (
+                <form onSubmit={submitAssignment} className="space-y-4 p-4">
+                  <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
+                    <p><span className="font-medium">Dạng bài:</span> {selectedExerciseType?.title}</p>
+                    <p><span className="font-medium">Lớp nhận:</span> {selectedClassGroup?.name}</p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Hạn nộp</label>
+                      <input
+                        type="date"
+                        value={assignmentForm.dueDate}
+                        onChange={(event) => setAssignmentForm({ ...assignmentForm, dueDate: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-gray-700">Số học viên</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={assignmentForm.assignedCount}
+                        onChange={(event) => setAssignmentForm({ ...assignmentForm, assignedCount: event.target.value })}
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                        placeholder={String(selectedClassGroup?.studentCount || '')}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-gray-700">Ghi chú</label>
+                    <textarea
+                      value={assignmentForm.note}
+                      onChange={(event) => setAssignmentForm({ ...assignmentForm, note: event.target.value })}
+                      className="min-h-24 w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-green-500 focus:ring-2 focus:ring-green-500"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" onClick={() => setFormMode(null)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+                      Hủy
+                    </button>
+                    <button type="submit" disabled={savingMaterial || !selectedExerciseType || !selectedClassGroup} className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50">
+                      <Save size={16} />
+                      Giao bài
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </ModalPortal>
+      )}
+    </div>
+  );
+};
+
 
 export const HomeworkManager: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const { classes } = useClasses();
   const { students: allStudents } = useStudents({});
   const { user, staffData } = useAuth();
   const { shouldShowOnlyOwnClasses, staffId } = usePermissions();
   const { holidays } = useHolidays();
 
-  // Tab state (only homework tab remains after refactor)
-  const [activeTab, setActiveTab] = useState<'homework'>('homework');
+  const [activeTab, setActiveTab] = useState<'homework' | 'materials'>(() =>
+    searchParams.get('tab') === 'materials' ? 'materials' : 'homework'
+  );
 
   // State
-  const [selectedClassId, setSelectedClassId] = useState<string>('');
+  const [selectedClassId, setSelectedClassId] = useState<string>(() => searchParams.get('classId') || '');
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [filterBranch, setFilterBranch] = useState<string>('');  // Branch filter
   const [sessions, setSessions] = useState<any[]>([]);
@@ -96,6 +1591,9 @@ export const HomeworkManager: React.FC = () => {
   const [newStatusLabel, setNewStatusLabel] = useState('');
   const [newStatusColor, setNewStatusColor] = useState('bg-gray-500');
 
+  useEffect(() => {
+    setActiveTab(searchParams.get('tab') === 'materials' ? 'materials' : 'homework');
+  }, [searchParams]);
 
   // Get unique branches from classes
   const branches = useMemo(() => {
@@ -186,11 +1684,8 @@ export const HomeworkManager: React.FC = () => {
   useEffect(() => {
     const loadStatuses = async () => {
       try {
-        const docRef = doc(db, 'settings', 'homeworkStatuses');
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setGlobalStatuses(docSnap.data().statuses || DEFAULT_HOMEWORK_STATUSES);
-        }
+        const statuses = await getHomeworkStatuses(DEFAULT_HOMEWORK_STATUSES);
+        setGlobalStatuses(statuses);
       } catch (err) {
         console.error('Error loading statuses:', err);
       }
@@ -208,12 +1703,8 @@ export const HomeworkManager: React.FC = () => {
       
       setLoadingSessions(true);
       try {
-        const sessionsSnap = await getDocs(
-          query(collection(db, 'classSessions'), where('classId', '==', selectedClassId))
-        );
-        const data = sessionsSnap.docs
-          .map(doc => ({ id: doc.id, ...doc.data() }))
-          .sort((a: any, b: any) => a.sessionNumber - b.sessionNumber);
+        const selectedClass = classes.find(c => c.id === selectedClassId);
+        const data = await getClassSessionsWithScheduleFallback(selectedClass);
         setSessions(data);
       } catch (err) {
         console.error('Error loading sessions:', err);
@@ -223,7 +1714,7 @@ export const HomeworkManager: React.FC = () => {
     };
     
     loadSessions();
-  }, [selectedClassId]);
+  }, [selectedClassId, classes]);
 
   // Load existing homework record when session is selected
   useEffect(() => {
@@ -237,18 +1728,10 @@ export const HomeworkManager: React.FC = () => {
       
       setLoading(true);
       try {
-        const recordsSnap = await getDocs(
-          query(
-            collection(db, 'homeworkRecords'),
-            where('classId', '==', selectedClassId),
-            where('sessionId', '==', selectedSessionId)
-          )
-        );
-        
-        if (!recordsSnap.empty) {
-          const record = recordsSnap.docs[0];
-          const data = record.data() as HomeworkSession;
-          setExistingRecordId(record.id);
+        const data = await getHomeworkRecord(selectedClassId, selectedSessionId);
+
+        if (data) {
+          setExistingRecordId(data.id || null);
           setHomeworks(data.homeworks || []);
 
           // Smart merge: if stored studentRecords is empty but we have students,
@@ -408,11 +1891,11 @@ export const HomeworkManager: React.FC = () => {
       };
       
       if (existingRecordId) {
-        await updateDoc(doc(db, 'homeworkRecords', existingRecordId), recordData);
+        await saveHomeworkRecord(recordData, existingRecordId);
       } else {
         recordData.createdAt = new Date().toISOString();
-        const docRef = await addDoc(collection(db, 'homeworkRecords'), recordData);
-        setExistingRecordId(docRef.id);
+        const id = await saveHomeworkRecord(recordData);
+        setExistingRecordId(id);
       }
       
       alert('Đã lưu thành công!');
@@ -427,7 +1910,7 @@ export const HomeworkManager: React.FC = () => {
   // Save global statuses
   const handleSaveStatuses = async () => {
     try {
-      await setDoc(doc(db, 'settings', 'homeworkStatuses'), { statuses: globalStatuses });
+      await saveHomeworkStatuses(globalStatuses);
       alert('Đã lưu cấu hình trạng thái!');
       setShowStatusConfig(false);
     } catch (err) {
@@ -480,11 +1963,8 @@ export const HomeworkManager: React.FC = () => {
       for (const classId of selectedBulkClassIds) {
         const selectedClass = classes.find(c => c.id === classId);
         
-        // Get all sessions for this class
-        const sessionsSnap = await getDocs(
-          query(collection(db, 'classSessions'), where('classId', '==', classId))
-        );
-        const classSessions = sessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        // Get all sessions for this class, falling back to the configured class schedule.
+        const classSessions = await getClassSessionsWithScheduleFallback(selectedClass);
 
         const homeworkList = validHomeworks.map(name => ({
           id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
@@ -493,16 +1973,10 @@ export const HomeworkManager: React.FC = () => {
         }));
 
         for (const session of classSessions) {
-          const existingQ = query(
-            collection(db, 'homeworkRecords'),
-            where('classId', '==', classId),
-            where('sessionId', '==', session.id)
-          );
-          const existingSnap = await getDocs(existingQ);
+          if (!session.id) continue;
+          const existingData = await getHomeworkRecord(classId, session.id);
 
-          if (!existingSnap.empty) {
-            const existingDoc = existingSnap.docs[0];
-            const existingData = existingDoc.data();
+          if (existingData) {
             const existingHomeworks = existingData.homeworks || [];
             
             const newHomeworks = homeworkList.filter(
@@ -510,14 +1984,15 @@ export const HomeworkManager: React.FC = () => {
             );
             
             if (newHomeworks.length > 0) {
-              await updateDoc(doc(db, 'homeworkRecords', existingDoc.id), {
+              await saveHomeworkRecord({
+                ...existingData,
                 homeworks: [...existingHomeworks, ...newHomeworks],
                 updatedAt: new Date().toISOString()
-              });
+              }, existingData.id);
               totalUpdated++;
             }
           } else {
-            await addDoc(collection(db, 'homeworkRecords'), {
+            await saveHomeworkRecord({
               classId,
               className: selectedClass?.name || '',
               sessionId: session.id,
@@ -567,7 +2042,8 @@ export const HomeworkManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Homework controls */}
+      {activeTab === 'homework' && (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
@@ -635,24 +2111,8 @@ export const HomeworkManager: React.FC = () => {
           </div>
         </div>
 
-        {/* Tabs */}
-        {selectedClassId && (
-          <div className="flex border-b border-gray-200">
-            <button
-              onClick={() => setActiveTab('homework')}
-              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
-                activeTab === 'homework' 
-                  ? 'border-blue-600 text-blue-600' 
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <FileText size={16} className="inline mr-2" />
-              Bài tập theo buổi
-            </button>
-            {/* Note: "Nhận xét tháng" and "Nhận xét bài Test" tabs moved to Reports > Báo cáo Học tập */}
-          </div>
-        )}
       </div>
+      )}
 
       {/* TAB: Homework by Session */}
       {activeTab === 'homework' && selectedClassId && (
@@ -867,8 +2327,13 @@ export const HomeworkManager: React.FC = () => {
       )}
 
 
+      {/* TAB: Learning Materials */}
+      {activeTab === 'materials' && (
+        <LearningMaterialsTab assignedByName={staffData?.name || user?.displayName || 'Unknown'} />
+      )}
+
       {/* Empty State */}
-      {!selectedClassId && (
+      {activeTab === 'homework' && !selectedClassId && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
           <BookOpen size={48} className="mx-auto text-gray-300 mb-4" />
           <h3 className="text-lg font-medium text-gray-600 mb-2">Chọn lớp học</h3>

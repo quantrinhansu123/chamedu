@@ -216,14 +216,19 @@ export const CenterSettings: React.FC = () => {
           center={editingCenter}
           onClose={() => { setShowModal(false); setEditingCenter(null); }}
           onSubmit={async (data) => {
-            if (editingCenter?.id) {
-              await centerService.updateCenter(editingCenter.id, data);
-            } else {
-              await centerService.createCenter(data as Omit<Center, 'id'>);
+            try {
+              if (editingCenter?.id) {
+                await centerService.updateCenter(editingCenter.id, data);
+              } else {
+                await centerService.createCenter(data as Omit<Center, 'id'>);
+              }
+              await fetchData();
+              setShowModal(false);
+              setEditingCenter(null);
+            } catch (err: any) {
+              alert(err?.message || 'Không thể lưu trung tâm');
+              throw err;
             }
-            await fetchData();
-            setShowModal(false);
-            setEditingCenter(null);
           }}
         />
       )}

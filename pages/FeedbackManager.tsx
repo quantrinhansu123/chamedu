@@ -9,8 +9,74 @@ import { ModalPortal } from '@/components/modal-portal';
 import { useFeedback } from '../src/hooks/useFeedback';
 import { useStudents } from '../src/hooks/useStudents';
 import { useClasses } from '../src/hooks/useClasses';
-import { FeedbackRecord, FeedbackType, FeedbackStatus } from '../src/services/feedbackService';
+import { useAuth } from '../src/hooks/useAuth';
+import {
+  FeedbackRecord,
+  FeedbackType,
+  FeedbackStatus,
+  DEFAULT_CALL_STATUSES,
+} from '../src/services/feedbackService';
 import { Student } from '../types';
+
+const StatusCombobox: React.FC<{
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+}> = ({ value, options, onChange, placeholder }) => {
+  const [open, setOpen] = useState(false);
+  const suggestions = useMemo(() => {
+    const term = value.trim().toLowerCase();
+    const matched = options.filter((o) => !term || o.toLowerCase().includes(term));
+    if (value.trim() && !options.some((o) => o.toLowerCase() === value.trim().toLowerCase())) {
+      return [value.trim(), ...matched];
+    }
+    return matched;
+  }, [value, options]);
+
+  return (
+    <div className="relative">
+      <input
+        type="text"
+        list="feedback-status-options"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+        autoComplete="off"
+      />
+      <datalist id="feedback-status-options">
+        {options.map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
+      {open && suggestions.length > 0 && (
+        <ul className="absolute z-20 mt-1 w-full max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+          {suggestions.map((s) => (
+            <li key={s}>
+              <button
+                type="button"
+                className="w-full px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(s);
+                  setOpen(false);
+                }}
+              >
+                {s}
+                {!options.includes(s) && (
+                  <span className="ml-2 text-xs text-indigo-500">(mới)</span>
+                )}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 export const FeedbackManager: React.FC = () => {
   const { feedbacks, callFeedbacks, formFeedbacks, loading, error, createFeedback, updateStatus, deleteFeedback } = useFeedback();
@@ -47,9 +113,13 @@ export const FeedbackManager: React.FC = () => {
     f.className.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  // Stats
-  const needCallCount = callFeedbacks.filter(f => f.status === 'Cần gọi').length;
-  const completedCount = feedbacks.filter(f => f.status === 'Hoàn thành').length;
+  const statusOptions = useMemo(() => {
+    const fromData = callFeedbacks.map((f) => f.status).filter(Boolean);
+    return [...new Set([...DEFAULT_CALL_STATUSES, ...fromData])];
+  }, [callFeedbacks]);
+
+  const satisfiedCount = callFeedbacks.filter((f) => f.status === 'Hài lòng').length;
+  const unsatisfiedCount = callFeedbacks.filter((f) => f.status === 'Không hài lòng').length;
 
   return (
     <div className="space-y-6">
@@ -59,11 +129,11 @@ export const FeedbackManager: React.FC = () => {
           <div className="flex items-center gap-4">
             <h2 className="text-lg font-bold text-gray-800">Quản lý phản hồi phụ huynh</h2>
             <div className="flex gap-2">
-              <span className="text-sm bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full font-medium">
-                Cần gọi: {needCallCount}
-              </span>
               <span className="text-sm bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">
-                Hoàn thành: {completedCount}
+                Hài lòng: {satisfiedCount}
+              </span>
+              <span className="text-sm bg-red-100 text-red-700 px-3 py-1 rounded-full font-medium">
+                Không hài lòng: {unsatisfiedCount}
               </span>
             </div>
           </div>
@@ -155,19 +225,22 @@ export const FeedbackManager: React.FC = () => {
                     <td className="px-4 py-3">{fb.className}</td>
                     <td className="px-4 py-3">{fb.caller || '-'}</td>
                     <td className="px-4 py-3 max-w-xs truncate">{fb.content || '-'}</td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-4 py-3 text-center min-w-[140px]">
                       <select
                         value={fb.status}
-                        onChange={(e) => fb.id && handleStatusChange(fb.id, e.target.value as FeedbackStatus)}
-                        className={`px-2 py-1 rounded text-xs font-medium border-0 cursor-pointer ${
-                          fb.status === 'Cần gọi' ? 'bg-yellow-100 text-yellow-700' :
-                          fb.status === 'Đã gọi' ? 'bg-blue-100 text-blue-700' :
-                          'bg-green-100 text-green-700'
+                        onChange={(e) => fb.id && handleStatusChange(fb.id, e.target.value)}
+                        className={`px-2 py-1 rounded text-xs font-medium border-0 cursor-pointer max-w-[160px] ${
+                          fb.status === 'Hài lòng' ? 'bg-green-100 text-green-700' :
+                          fb.status === 'Không hài lòng' ? 'bg-red-100 text-red-700' :
+                          'bg-gray-100 text-gray-700'
                         }`}
                       >
-                        <option value="Cần gọi">Cần gọi</option>
-                        <option value="Đã gọi">Đã gọi</option>
-                        <option value="Hoàn thành">Hoàn thành</option>
+                        {statusOptions.includes(fb.status) ? null : (
+                          <option value={fb.status}>{fb.status}</option>
+                        )}
+                        {statusOptions.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
                       </select>
                     </td>
                     <td className="px-4 py-3 text-center">
@@ -261,6 +334,7 @@ export const FeedbackManager: React.FC = () => {
       {/* Add Modal */}
       {showModal && (
         <FeedbackModal
+          statusOptions={statusOptions}
           onClose={() => setShowModal(false)}
           onSubmit={async (data) => {
             await createFeedback(data);
@@ -289,19 +363,22 @@ const ScoreBadge: React.FC<{ score?: number }> = ({ score }) => {
 
 // Feedback Modal
 interface FeedbackModalProps {
+  statusOptions: string[];
   onClose: () => void;
   onSubmit: (data: Omit<FeedbackRecord, 'id'>) => Promise<void>;
 }
 
-const FeedbackModal: React.FC<FeedbackModalProps> = ({ onClose, onSubmit }) => {
+const FeedbackModal: React.FC<FeedbackModalProps> = ({ statusOptions, onClose, onSubmit }) => {
   const { students } = useStudents();
   const { classes } = useClasses();
-  
+  const { staffData, user } = useAuth();
+
   const [formData, setFormData] = useState({
     type: 'Call' as FeedbackType,
     date: new Date().toISOString().split('T')[0],
     studentId: '',
     studentName: '',
+    classId: '',
     className: '',
     caller: '',
     content: '',
@@ -309,78 +386,108 @@ const FeedbackModal: React.FC<FeedbackModalProps> = ({ onClose, onSubmit }) => {
     curriculumScore: 8,
     careScore: 8,
     facilitiesScore: 8,
-    status: 'Cần gọi' as FeedbackStatus,
+    status: DEFAULT_CALL_STATUSES[0] as FeedbackStatus,
   });
   const [loading, setLoading] = useState(false);
   const [studentSearch, setStudentSearch] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
-  const searchRef = useRef<HTMLDivElement>(null);
+  const [showStudentSuggestions, setShowStudentSuggestions] = useState(false);
+  const studentSearchRef = useRef<HTMLDivElement>(null);
 
-  // Filter students based on search
-  const filteredStudents = useMemo(() => {
-    if (!studentSearch.trim()) return [];
-    const searchLower = studentSearch.toLowerCase();
-    return students.filter(s => 
-      (s.fullName?.toLowerCase().includes(searchLower)) ||
-      ((s as any).name?.toLowerCase().includes(searchLower)) ||
-      (s.code?.toLowerCase().includes(searchLower))
-    ).slice(0, 10); // Limit to 10 suggestions
-  }, [students, studentSearch]);
+  const activeClasses = useMemo(
+    () => [...classes].sort((a, b) => (a.name || '').localeCompare(b.name || '')),
+    [classes]
+  );
 
-  // Get classes for selected student
-  const studentClasses = useMemo(() => {
-    if (!selectedStudent) return [];
-    
-    const studentClassIds: string[] = [];
-    const studentClassNames: string[] = [];
-    
-    // Collect all possible class references
-    if (selectedStudent.classId) studentClassIds.push(selectedStudent.classId);
-    if ((selectedStudent as any).classIds) studentClassIds.push(...(selectedStudent as any).classIds);
-    if (selectedStudent.class) studentClassNames.push(selectedStudent.class);
-    if ((selectedStudent as any).className) studentClassNames.push((selectedStudent as any).className);
-    
-    // Filter classes
-    return classes.filter(c => 
-      studentClassIds.includes(c.id) || 
-      studentClassNames.includes(c.name)
+  const studentsInClass = useMemo(() => {
+    if (!formData.classId && !formData.className) return [];
+    const cls = classes.find(
+      (c) => c.id === formData.classId || c.name === formData.className
     );
-  }, [selectedStudent, classes]);
+    if (!cls) return [];
 
-  // Close suggestions when clicking outside
+    return students.filter((s) => {
+      if (s.classId === cls.id) return true;
+      if (s.classIds?.includes(cls.id)) return true;
+      if (s.class === cls.name) return true;
+      return false;
+    });
+  }, [students, classes, formData.classId, formData.className]);
+
+  const filteredStudents = useMemo(() => {
+    if (!formData.classId) return [];
+    const searchLower = studentSearch.trim().toLowerCase();
+    const pool = searchLower
+      ? studentsInClass.filter(
+          (s) =>
+            s.fullName?.toLowerCase().includes(searchLower) ||
+            (s as any).name?.toLowerCase().includes(searchLower) ||
+            s.code?.toLowerCase().includes(searchLower)
+        )
+      : studentsInClass;
+    return pool.slice(0, 15);
+  }, [studentsInClass, studentSearch, formData.classId]);
+
+  useEffect(() => {
+    const callerName = staffData?.name || user?.displayName || '';
+    if (callerName) {
+      setFormData((prev) => (prev.caller ? prev : { ...prev, caller: callerName }));
+    }
+  }, [staffData, user]);
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
-        setShowSuggestions(false);
+      if (studentSearchRef.current && !studentSearchRef.current.contains(event.target as Node)) {
+        setShowStudentSuggestions(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Handle student selection
+  const handleClassChange = (classId: string) => {
+    const cls = classes.find((c) => c.id === classId);
+    setFormData((prev) => ({
+      ...prev,
+      classId: cls?.id || '',
+      className: cls?.name || '',
+      studentId: '',
+      studentName: '',
+    }));
+    setStudentSearch('');
+    setShowStudentSuggestions(false);
+  };
+
   const handleSelectStudent = (student: Student) => {
-    setSelectedStudent(student);
-    setStudentSearch(student.fullName || (student as any).name || '');
-    setFormData(prev => ({
+    const name = student.fullName || (student as any).name || '';
+    setStudentSearch(name);
+    setFormData((prev) => ({
       ...prev,
       studentId: student.id,
-      studentName: student.fullName || (student as any).name || '',
-      className: '', // Reset class when student changes
+      studentName: name,
     }));
-    setShowSuggestions(false);
+    setShowStudentSuggestions(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.studentName || !formData.className) {
-      alert('Vui lòng điền đầy đủ thông tin');
+    if (!formData.className) {
+      alert('Vui lòng chọn lớp');
+      return;
+    }
+    if (!formData.studentName) {
+      alert('Vui lòng chọn học sinh');
+      return;
+    }
+    if (formData.type === 'Call' && !formData.status.trim()) {
+      alert('Vui lòng nhập trạng thái');
       return;
     }
     setLoading(true);
     try {
-      await onSubmit(formData);
+      await onSubmit({
+        ...formData,
+        status: formData.type === 'Form' ? 'Hoàn thành' : formData.status.trim(),
+      });
     } finally {
       setLoading(false);
     }
@@ -410,116 +517,103 @@ const FeedbackModal: React.FC<FeedbackModalProps> = ({ onClose, onSubmit }) => {
             </select>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Ngày</label>
-              <input
-                type="date"
-                value={formData.date}
-                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
-              <select
-                value={formData.status}
-                onChange={(e) => setFormData({ ...formData, status: e.target.value as FeedbackStatus })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="Cần gọi">Cần gọi</option>
-                <option value="Đã gọi">Đã gọi</option>
-                <option value="Hoàn thành">Hoàn thành</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Student Autocomplete */}
-          <div ref={searchRef} className="relative">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Tên học sinh *</label>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Ngày</label>
             <input
-              type="text"
-              required
-              value={studentSearch}
-              onChange={(e) => {
-                setStudentSearch(e.target.value);
-                setShowSuggestions(true);
-                if (!e.target.value) {
-                  setSelectedStudent(null);
-                  setFormData(prev => ({ ...prev, studentId: '', studentName: '', className: '' }));
-                }
-              }}
-              onFocus={() => setShowSuggestions(true)}
+              type="date"
+              value={formData.date}
+              onChange={(e) => setFormData({ ...formData, date: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-              placeholder="Gõ tên học sinh để tìm..."
-              autoComplete="off"
             />
-            
-            {/* Suggestions Dropdown */}
-            {showSuggestions && filteredStudents.length > 0 && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                {filteredStudents.map((student) => (
-                  <button
-                    key={student.id}
-                    type="button"
-                    onClick={() => handleSelectStudent(student)}
-                    className="w-full px-4 py-2 text-left hover:bg-indigo-50 flex items-center justify-between"
-                  >
-                    <div>
-                      <p className="font-medium text-gray-900">
-                        {student.fullName || (student as any).name}
-                      </p>
-                      <p className="text-xs text-gray-500">
-                        {student.code} • {student.class || (student as any).className || 'Chưa có lớp'}
-                      </p>
-                    </div>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
-                      student.status === 'Đang học' ? 'bg-green-100 text-green-700' :
-                      student.status === 'Bảo lưu' ? 'bg-yellow-100 text-yellow-700' :
-                      'bg-gray-100 text-gray-600'
-                    }`}>
-                      {student.status}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-            
-            {showSuggestions && studentSearch && filteredStudents.length === 0 && (
-              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-4 text-center text-gray-500 text-sm">
-                Không tìm thấy học sinh
-              </div>
-            )}
           </div>
 
-          {/* Class Dropdown - Only show when student is selected */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Lớp *</label>
-            {selectedStudent ? (
-              studentClasses.length > 0 ? (
-                <select
-                  required
-                  value={formData.className}
-                  onChange={(e) => setFormData({ ...formData, className: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="">-- Chọn lớp --</option>
-                  {studentClasses.map((cls) => (
-                    <option key={cls.id} value={cls.name}>{cls.name}</option>
-                  ))}
-                </select>
-              ) : (
-                <div className="px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
-                  Học sinh chưa được gán vào lớp nào
-                </div>
-              )
-            ) : (
+            <select
+              required
+              value={formData.classId}
+              onChange={(e) => handleClassChange(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">-- Chọn lớp --</option>
+              {activeClasses.map((cls) => (
+                <option key={cls.id} value={cls.id}>{cls.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div ref={studentSearchRef} className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tên học sinh *</label>
+            {!formData.classId ? (
               <input
                 type="text"
                 disabled
-                placeholder="Vui lòng chọn học sinh trước"
+                placeholder="Vui lòng chọn lớp trước"
                 className="w-full px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-gray-400"
               />
+            ) : (
+              <>
+                <input
+                  type="text"
+                  required
+                  value={studentSearch}
+                  onChange={(e) => {
+                    setStudentSearch(e.target.value);
+                    setShowStudentSuggestions(true);
+                    if (!e.target.value) {
+                      setFormData((prev) => ({ ...prev, studentId: '', studentName: '' }));
+                    }
+                  }}
+                  onFocus={() => setShowStudentSuggestions(true)}
+                  onBlur={() => {
+                    setTimeout(() => {
+                      setShowStudentSuggestions(false);
+                      if (!formData.studentId && studentSearch.trim()) {
+                        const match = studentsInClass.find(
+                          (s) =>
+                            (s.fullName || (s as any).name)?.toLowerCase() ===
+                            studentSearch.trim().toLowerCase()
+                        );
+                        if (match) handleSelectStudent(match);
+                      }
+                    }, 150);
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Chọn hoặc gõ tên học sinh..."
+                  autoComplete="off"
+                />
+                {showStudentSuggestions && filteredStudents.length > 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                    {filteredStudents.map((student) => (
+                      <button
+                        key={student.id}
+                        type="button"
+                        onClick={() => handleSelectStudent(student)}
+                        className="w-full px-4 py-2 text-left hover:bg-indigo-50 flex items-center justify-between"
+                      >
+                        <div>
+                          <p className="font-medium text-gray-900">
+                            {student.fullName || (student as any).name}
+                          </p>
+                          <p className="text-xs text-gray-500">{student.code}</p>
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          student.status === 'Đang học' ? 'bg-green-100 text-green-700' :
+                          student.status === 'Bảo lưu' ? 'bg-yellow-100 text-yellow-700' :
+                          'bg-gray-100 text-gray-600'
+                        }`}>
+                          {student.status}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {showStudentSuggestions && formData.classId && filteredStudents.length === 0 && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg p-4 text-center text-gray-500 text-sm">
+                    {studentSearch.trim() ? 'Không tìm thấy học sinh trong lớp này' : 'Lớp chưa có học sinh'}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -531,7 +625,17 @@ const FeedbackModal: React.FC<FeedbackModalProps> = ({ onClose, onSubmit }) => {
                   type="text"
                   value={formData.caller}
                   onChange={(e) => setFormData({ ...formData, caller: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 bg-gray-50"
+                  placeholder="Tự điền người đang nhập"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Trạng thái</label>
+                <StatusCombobox
+                  value={formData.status}
+                  options={statusOptions}
+                  onChange={(status) => setFormData({ ...formData, status })}
+                  placeholder="Hài lòng / Không hài lòng..."
                 />
               </div>
               <div>

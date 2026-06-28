@@ -236,6 +236,7 @@ export const CLASS_FIELDS = [
   { key: 'room', label: 'Phòng học', example: 'Phòng 101' },
   { key: 'schedule', label: 'Lịch học', example: 'T2-T4-T6 17:00' },
   { key: 'maxStudents', label: 'Sĩ số tối đa', example: '15' },
+  { key: 'tuitionFee', label: 'Học phí', example: '3600000' },
   { key: 'status', label: 'Trạng thái', example: 'Đang hoạt động' },
 ];
 
@@ -248,6 +249,7 @@ export const CLASS_MAPPING = [
   { excelColumn: 'Phòng học', dbField: 'room' },
   { excelColumn: 'Lịch học', dbField: 'schedule' },
   { excelColumn: 'Sĩ số tối đa', dbField: 'maxStudents', transform: Number },
+  { excelColumn: 'Học phí', dbField: 'tuitionFee', transform: parseNumber },
   { excelColumn: 'Trạng thái', dbField: 'status' },
 ];
 
@@ -374,6 +376,7 @@ export const prepareClassExport = (classes: any[]): Record<string, any>[] => {
     'Phòng học': c.room || '',
     'Lịch học': c.schedule || '',
     'Sĩ số tối đa': c.maxStudents || '',
+    'Học phí': c.tuitionFee || '',
     'Trạng thái': c.status || '',
   }));
 };
@@ -391,4 +394,79 @@ export const prepareCurriculumExport = (curriculums: any[]): Record<string, any>
     'Học phí': c.tuitionFee || '',
     'Trạng thái': c.status || '',
   }));
+};
+
+// Contract fields
+export const CONTRACT_FIELDS = [
+  { key: 'studentName', label: 'Học viên', example: 'Nguyễn Văn A', required: true },
+  { key: 'studentCode', label: 'Mã học viên', example: 'HV001' },
+  { key: 'parentName', label: 'Tên phụ huynh', example: 'Nguyễn Thị B' },
+  { key: 'parentPhone', label: 'SĐT phụ huynh', example: '0901234567' },
+  { key: 'contractDate', label: 'Ngày HĐ (dd/mm/yyyy)', example: '01/03/2026' },
+  { key: 'className', label: 'Lớp học', example: 'Cam 4.2' },
+  { key: 'branch', label: 'Cơ sở', example: 'Cơ sở 1' },
+  { key: 'courseName', label: 'Tên gói/khóa', example: 'Gói 48 buổi' },
+  { key: 'sessions', label: 'Số buổi', example: '48' },
+  { key: 'unitPrice', label: 'Đơn giá/buổi', example: '150000' },
+  { key: 'totalAmount', label: 'Tổng tiền', example: '7200000' },
+  { key: 'paidAmount', label: 'Đã thanh toán', example: '7200000' },
+  { key: 'remainingAmount', label: 'Còn nợ', example: '0' },
+  { key: 'status', label: 'Trạng thái', example: 'Đã thanh toán' },
+  { key: 'paymentMethod', label: 'Hình thức TT', example: 'Tiền mặt' },
+  { key: 'notes', label: 'Ghi chú', example: '' },
+];
+
+export const CONTRACT_MAPPING = [
+  { excelColumn: 'Học viên', dbField: 'studentName' },
+  { excelColumn: 'Mã học viên', dbField: 'studentCode' },
+  { excelColumn: 'Tên phụ huynh', dbField: 'parentName' },
+  { excelColumn: 'SĐT phụ huynh', dbField: 'parentPhone', transform: String },
+  { excelColumn: 'Ngày HĐ (dd/mm/yyyy)', dbField: 'contractDate', transform: parseVNDate },
+  { excelColumn: 'Lớp học', dbField: 'className' },
+  { excelColumn: 'Cơ sở', dbField: 'branch' },
+  { excelColumn: 'Tên gói/khóa', dbField: 'courseName' },
+  { excelColumn: 'Số buổi', dbField: 'sessions', transform: Number },
+  { excelColumn: 'Đơn giá/buổi', dbField: 'unitPrice', transform: parseNumber },
+  { excelColumn: 'Tổng tiền', dbField: 'totalAmount', transform: parseNumber },
+  { excelColumn: 'Đã thanh toán', dbField: 'paidAmount', transform: parseNumber },
+  { excelColumn: 'Còn nợ', dbField: 'remainingAmount', transform: parseNumber },
+  { excelColumn: 'Trạng thái', dbField: 'status' },
+  { excelColumn: 'Hình thức TT', dbField: 'paymentMethod' },
+  { excelColumn: 'Ghi chú', dbField: 'notes' },
+];
+
+/**
+ * Prepare contract data for export (flat row per contract)
+ */
+export const prepareContractExport = (contracts: any[]): Record<string, any>[] => {
+  return contracts.map(c => {
+    const firstItem = c.items?.[0];
+    const sessions =
+      c.totalSessions ||
+      c.items?.reduce((sum: number, item: any) => sum + (item.quantity || 0), 0) ||
+      0;
+    const contractDate = c.contractDate
+      ? formatDateVN(String(c.contractDate).split('T')[0])
+      : '';
+
+    return {
+      'Mã HĐ': c.code || '',
+      'Học viên': c.studentName || '',
+      'Tên phụ huynh': c.parentName || '',
+      'SĐT phụ huynh': c.parentPhone || '',
+      'Ngày HĐ (dd/mm/yyyy)': contractDate,
+      'Lớp học': c.className || firstItem?.className || '',
+      'Cơ sở': c.branch || '',
+      'Tên gói/khóa': firstItem?.name || '',
+      'Số buổi': sessions,
+      'Đơn giá/buổi': firstItem?.unitPrice || c.pricePerSession || '',
+      'Tổng tiền': c.totalAmount || 0,
+      'Đã thanh toán': c.paidAmount || 0,
+      'Còn nợ': c.remainingAmount || 0,
+      'Trạng thái': c.status || '',
+      'Hình thức TT': c.paymentMethod || '',
+      'Ghi chú': c.notes || '',
+      'Người tạo': c.createdBy || '',
+    };
+  });
 };

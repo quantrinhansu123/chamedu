@@ -166,6 +166,7 @@ export interface ClassModel {
   ageGroup: string;
   progress: string; // e.g., "12/24 Buổi"
   totalSessions?: number; // Tổng số buổi học của lớp
+  tuitionFee?: number; // Học phí của lớp
   teacher: string;
   teacherId?: string;
   teacherDuration?: number; // Thời lượng dạy của GV VN (phút)
@@ -189,6 +190,7 @@ export interface ClassModel {
   room?: string; // Phòng mặc định (legacy)
   branch?: string; // Cơ sở
   color?: number; // Index màu trong palette (0-15), undefined = auto từ tên lớp
+  createdDate?: string; // Ngay tao lop de theo doi hoc phi theo ngay/thang
   startDate: string;
   endDate: string;
   createdAt?: string;
@@ -428,6 +430,14 @@ export interface StudentAttendance {
   sessionNumber?: number;
   status: AttendanceStatus;
   note?: string;
+  /** Nhận xét ý thức học tập trong buổi */
+  attitudeComment?: string;
+  /** Thẻ chú ý gửi phụ huynh (JSON AttentionCardData) */
+  attentionCard?: string;
+  /** Dạng bài học trong buổi (JSON LessonExerciseTagsData) */
+  lessonExerciseTags?: string;
+  /** Dạng bài kiểm tra ngày sau (JSON CheckExerciseTagsData) */
+  checkExerciseTags?: string;
 
   // Thông tin điểm số buổi học
   homeworkCompletion?: number;  // % BTVN (0-100)

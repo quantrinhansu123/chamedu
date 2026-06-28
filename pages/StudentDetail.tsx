@@ -1,9 +1,8 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ChevronLeft, User, Phone, Mail, MapPin, Calendar, BookOpen, DollarSign, Clock, MessageSquare, FileText, X, GraduationCap, CheckCircle2, CalendarCheck, Circle, TrendingUp, AlertTriangle, History, CreditCard, AlertCircle, BadgeDollarSign, FileDown, RefreshCw, Eye } from 'lucide-react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { useClasses } from '../src/hooks/useClasses';
 import { useStudents } from '../src/hooks/useStudents';
 import { useSettlementInvoices } from '../src/hooks/useSettlementInvoices';
@@ -89,7 +88,7 @@ export const StudentDetail: React.FC = () => {
       if (!id) return;
       try {
         const q = query(
-          collection(db, 'studentAttendance'),
+          collection(null as any /* firebase removed */, 'studentAttendance'),
           where('studentId', '==', id)
         );
         const snapshot = await getDocs(q);
@@ -154,7 +153,7 @@ export const StudentDetail: React.FC = () => {
       try {
         // Fetch enrollments
         const enrollQ = query(
-          collection(db, 'enrollments'),
+          collection(null as any /* firebase removed */, 'enrollments'),
           where('studentId', '==', id)
         );
         const enrollSnap = await getDocs(enrollQ);
@@ -169,7 +168,7 @@ export const StudentDetail: React.FC = () => {
 
         // Fetch contracts
         const contractQ = query(
-          collection(db, 'contracts'),
+          collection(null as any /* firebase removed */, 'contracts'),
           where('studentId', '==', id)
         );
         const contractSnap = await getDocs(contractQ);
@@ -302,7 +301,7 @@ export const StudentDetail: React.FC = () => {
       
       // Get all sessions for this class
       const sessionsQuery = query(
-        collection(db, 'classSessions'),
+        collection(null as any /* firebase removed */, 'classSessions'),
         where('classId', '==', classId)
       );
       const sessionsSnap = await getDocs(sessionsQuery);
@@ -754,7 +753,7 @@ export const StudentDetail: React.FC = () => {
                                              setLoadingClassAttendance(true);
                                              try {
                                                 const attendanceQuery = query(
-                                                   collection(db, 'studentAttendance'),
+                                                   collection(null as any /* firebase removed */, 'studentAttendance'),
                                                    where('studentId', '==', id),
                                                    where('classId', '==', cls.id)
                                                 );
@@ -1187,8 +1186,8 @@ export const StudentDetail: React.FC = () => {
                                        </td>
                                     </tr>
                                  ) : contracts.map((contract: any) => (
-                                    <tr key={contract.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/finance/contracts?view=${contract.id}`)}>
-                                       <td className="px-4 py-3 font-medium text-indigo-600">{contract.code || contract.id.slice(0, 8)}</td>
+                                    <tr key={contract.id} className="hover:bg-gray-50">
+                                       <td className="px-4 py-3 font-medium text-gray-700">{contract.code || contract.id.slice(0, 8)}</td>
                                        <td className="px-4 py-3">{contract.category || contract.type}</td>
                                        <td className="px-4 py-3">{contract.createdAt ? new Date(contract.createdAt).toLocaleDateString('vi-VN') : '--'}</td>
                                        <td className="px-4 py-3 text-right font-medium">{contract.totalAmount?.toLocaleString('vi-VN')}đ</td>

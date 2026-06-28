@@ -1,11 +1,10 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Class Manager Hook
  * State management for ClassManager page
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
 import { useClasses } from '../../../hooks/useClasses';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { useAuth } from '../../../hooks/useAuth';
@@ -80,7 +79,7 @@ export function useClassManager(options?: { searchTerm?: string }) {
     }
 
     const unsubscribe = onSnapshot(
-      collection(db, 'students'),
+      collection(null as any /* firebase removed */, 'students'),
       (snapshot) => {
         const students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         const PRICE_PER_SESSION = 150000;
@@ -145,7 +144,7 @@ export function useClassManager(options?: { searchTerm?: string }) {
     }
 
     const unsubscribe = onSnapshot(
-      collection(db, 'classSessions'),
+      collection(null as any /* firebase removed */, 'classSessions'),
       (snapshot) => {
         const stats: Record<string, ClassSessionStats> = {};
 

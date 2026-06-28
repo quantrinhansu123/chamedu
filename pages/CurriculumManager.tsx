@@ -3,14 +3,12 @@
  * Quản lý Gói học / Khóa học
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { BookOpen, Plus, Edit, Trash2, X, Clock, Users, DollarSign, Settings } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
 import * as curriculumService from '../src/services/curriculumService';
 import { Curriculum, CurriculumLevel, CurriculumStatus } from '../src/services/curriculumService';
 import { formatCurrency } from '../src/utils/currencyUtils';
-import { db } from '../src/config/firebase';
-import { collection, getDocs, addDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
 import { ImportExportButtons } from '../components/ImportExportButtons';
 import { CURRICULUM_FIELDS, CURRICULUM_MAPPING, prepareCurriculumExport } from '../src/utils/excelUtils';
 
@@ -49,6 +47,7 @@ export const CurriculumManager: React.FC = () => {
   const [programTypes, setProgramTypes] = useState<string[]>(DEFAULT_PROGRAMS);
   const [showProgramConfig, setShowProgramConfig] = useState(false);
   const [newProgram, setNewProgram] = useState('');
+  const [programConfigError, setProgramConfigError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchCurriculums();
@@ -58,25 +57,26 @@ export const CurriculumManager: React.FC = () => {
   // Fetch program types from Firestore
   const fetchProgramTypes = async () => {
     try {
-      const docRef = doc(db, 'settings', 'programTypes');
-      const snapshot = await getDocs(collection(db, 'settings'));
-      const settingsDoc = snapshot.docs.find(d => d.id === 'programTypes');
-      if (settingsDoc?.data()?.types?.length > 0) {
-        setProgramTypes(settingsDoc.data().types);
+      setProgramConfigError(null);
+      const types = await curriculumService.getProgramTypes();
+      if (types?.length) {
+        setProgramTypes(types);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error fetching program types:', err);
+      setProgramConfigError(err?.message || 'Khong the tai cau hinh chuong trinh');
     }
   };
 
   // Save program types to Firestore
   const saveProgramTypes = async (types: string[]) => {
     try {
-      await setDoc(doc(db, 'settings', 'programTypes'), { types });
+      setProgramConfigError(null);
+      await curriculumService.saveProgramTypes(types);
       setProgramTypes(types);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving program types:', err);
-      alert('Lỗi lưu cấu hình');
+      setProgramConfigError(err?.message || 'Khong the luu cau hinh chuong trinh');
     }
   };
 
@@ -102,7 +102,7 @@ export const CurriculumManager: React.FC = () => {
       const data = await curriculumService.getCurriculums();
       setCurriculums(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      setError(err instanceof Error ? err.message : 'Khong the tai danh sach goi hoc');
     } finally {
       setLoading(false);
     }
@@ -113,8 +113,8 @@ export const CurriculumManager: React.FC = () => {
     try {
       await curriculumService.deleteCurriculum(id);
       await fetchCurriculums();
-    } catch (err) {
-      alert('Không thể xóa');
+    } catch (err: any) {
+      setError(err?.message || 'Khong the xoa goi hoc');
     }
   };
 
@@ -309,6 +309,11 @@ export const CurriculumManager: React.FC = () => {
           curriculum={editingCurriculum}
           programTypes={programTypes}
           onClose={() => { setShowModal(false); setEditingCurriculum(null); }}
+          onAddProgramType={async (type) => {
+            if (!programTypes.includes(type)) {
+              await saveProgramTypes([...programTypes, type]);
+            }
+          }}
           onSubmit={async (data) => {
             if (editingCurriculum?.id) {
               await curriculumService.updateCurriculum(editingCurriculum.id, data);
@@ -363,6 +368,11 @@ export const CurriculumManager: React.FC = () => {
                   </div>
                 ))}
               </div>
+              {programConfigError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {programConfigError}
+                </div>
+              )}
               <p className="text-xs text-gray-500 mt-4">
                 Danh sách này sẽ hiển thị trong dropdown "Chương trình" khi thêm/sửa khóa học.
               </p>
@@ -388,39 +398,89 @@ interface CurriculumModalProps {
   curriculum?: Curriculum | null;
   programTypes: string[];
   onClose: () => void;
+  onAddProgramType?: (type: string) => Promise<void>;
   onSubmit: (data: Partial<Curriculum>) => Promise<void>;
 }
 
-const CurriculumModal: React.FC<CurriculumModalProps> = ({ curriculum, programTypes, onClose, onSubmit }) => {
+const CurriculumModal: React.FC<CurriculumModalProps> = ({
+  curriculum,
+  programTypes,
+  onClose,
+  onAddProgramType,
+  onSubmit,
+}) => {
   const [formData, setFormData] = useState({
     name: curriculum?.name || '',
     code: curriculum?.code || '',
     description: curriculum?.description || '',
-    level: curriculum?.level || 'Beginner' as CurriculumLevel,
+    level: curriculum?.level || '',
     ageRange: curriculum?.ageRange || '',
     duration: curriculum?.duration || 3,
-    totalSessions: curriculum?.totalSessions || 24,
-    sessionDuration: curriculum?.sessionDuration || 90,
+    totalSessions: String(curriculum?.totalSessions ?? 24),
+    sessionDuration: String(curriculum?.sessionDuration ?? 90),
     tuitionFee: curriculum?.tuitionFee || 0,
     status: curriculum?.status || 'Active' as CurriculumStatus,
   });
   const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [showProgramSuggestions, setShowProgramSuggestions] = useState(false);
 
-  // Format number with commas
+  const programSuggestions = useMemo(() => {
+    const term = formData.level.trim().toLowerCase();
+    const fromConfig = programTypes.filter((p) => !term || p.toLowerCase().includes(term));
+    const typed = formData.level.trim();
+    if (typed && !programTypes.some((p) => p.toLowerCase() === typed.toLowerCase())) {
+      return [typed, ...fromConfig];
+    }
+    return fromConfig;
+  }, [formData.level, programTypes]);
+
   const formatNumber = (num: number) => num.toLocaleString('vi-VN');
-  const parseNumber = (str: string) => parseInt(str.replace(/\./g, '').replace(/,/g, '')) || 0;
+  const parseNumber = (str: string) => parseInt(str.replace(/\./g, '').replace(/,/g, ''), 10) || 0;
+
+  const handleIntegerInput = (field: 'totalSessions' | 'sessionDuration', value: string) => {
+    if (value === '' || /^\d+$/.test(value)) {
+      setFormData((prev) => ({ ...prev, [field]: value }));
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name) {
+    if (!formData.name.trim()) {
       alert('Vui lòng nhập tên khóa học');
       return;
     }
+    const totalSessions = parseInt(formData.totalSessions, 10);
+    const sessionDuration = parseInt(formData.sessionDuration, 10);
+    if (!totalSessions || totalSessions < 1) {
+      alert('Vui lòng nhập tổng số buổi hợp lệ');
+      return;
+    }
+    if (!sessionDuration || sessionDuration < 1) {
+      alert('Vui lòng nhập phút/buổi hợp lệ');
+      return;
+    }
+    const level = formData.level.trim();
+    if (!level) {
+      alert('Vui lòng chọn hoặc nhập chương trình');
+      return;
+    }
     setLoading(true);
+    setSubmitError(null);
     try {
-      // Auto-generate code from name if not provided
+      if (onAddProgramType && !programTypes.includes(level)) {
+        await onAddProgramType(level);
+      }
       const code = formData.code || formData.name.replace(/\s+/g, '_').toUpperCase().slice(0, 20);
-      await onSubmit({ ...formData, code });
+      await onSubmit({
+        ...formData,
+        code,
+        level: level as CurriculumLevel,
+        totalSessions,
+        sessionDuration,
+      });
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Không thể lưu khóa học');
     } finally {
       setLoading(false);
     }
@@ -455,17 +515,46 @@ const CurriculumModal: React.FC<CurriculumModalProps> = ({ curriculum, programTy
               />
             </div>
 
-            <div>
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">Chương trình</label>
-              <select
+              <input
+                type="text"
+                list="curriculum-program-types"
                 value={formData.level}
-                onChange={(e) => setFormData({ ...formData, level: e.target.value as CurriculumLevel })}
+                onChange={(e) => setFormData({ ...formData, level: e.target.value })}
+                onFocus={() => setShowProgramSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowProgramSuggestions(false), 150)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
-              >
-                {programTypes.map(p => (
-                  <option key={p} value={p}>{p}</option>
+                placeholder="Chọn hoặc nhập chương trình..."
+                autoComplete="off"
+              />
+              <datalist id="curriculum-program-types">
+                {programTypes.map((p) => (
+                  <option key={p} value={p} />
                 ))}
-              </select>
+              </datalist>
+              {showProgramSuggestions && programSuggestions.length > 0 && (
+                <ul className="absolute z-20 mt-1 w-full max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                  {programSuggestions.map((p) => (
+                    <li key={p}>
+                      <button
+                        type="button"
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-indigo-50"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setFormData({ ...formData, level: p });
+                          setShowProgramSuggestions(false);
+                        }}
+                      >
+                        {p}
+                        {!programTypes.includes(p) && (
+                          <span className="ml-2 text-xs text-indigo-500">(mới)</span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <div>
@@ -495,23 +584,24 @@ const CurriculumModal: React.FC<CurriculumModalProps> = ({ curriculum, programTy
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Tổng số buổi</label>
               <input
-                type="number"
-                min={1}
+                type="text"
+                inputMode="numeric"
                 value={formData.totalSessions}
-                onChange={(e) => setFormData({ ...formData, totalSessions: parseInt(e.target.value) || 1 })}
+                onChange={(e) => handleIntegerInput('totalSessions', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder="VD: 24"
               />
             </div>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Phút/buổi</label>
               <input
-                type="number"
-                min={30}
-                step={15}
+                type="text"
+                inputMode="numeric"
                 value={formData.sessionDuration}
-                onChange={(e) => setFormData({ ...formData, sessionDuration: parseInt(e.target.value) || 90 })}
+                onChange={(e) => handleIntegerInput('sessionDuration', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                placeholder="VD: 90"
               />
             </div>
 
@@ -538,6 +628,11 @@ const CurriculumModal: React.FC<CurriculumModalProps> = ({ curriculum, programTy
           </div>
 
           <div className="flex gap-3 justify-end pt-4 border-t border-gray-200">
+            {submitError && (
+              <div className="mr-auto rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {submitError}
+              </div>
+            )}
             <button
               type="button"
               onClick={onClose}

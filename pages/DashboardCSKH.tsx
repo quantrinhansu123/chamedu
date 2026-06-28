@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * DashboardCSKH
  * Dashboard for CSKH (Customer Service) staff
@@ -9,11 +10,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { MapPin } from 'lucide-react';
-import { collection, getDocs, query, where, onSnapshot, doc, setDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
 import { formatCurrency } from '../src/utils/currencyUtils';
+import { getRevenueSummary } from '../src/services/revenueService';
+import { StudentService } from '../src/services/studentService';
+import { ClassService } from '../src/services/classService';
 import {
   DashboardStats,
   RevenueChart,
@@ -92,7 +94,7 @@ export const DashboardCSKH: React.FC = () => {
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
+        const centersSnap = await getDocs(collection(null as any /* firebase removed */, 'centers'));
         const centerData = centersSnap.docs
           .filter(d => d.data().status === 'Active')
           .map(d => ({ id: d.id, name: d.data().name || '' }));
@@ -110,7 +112,7 @@ export const DashboardCSKH: React.FC = () => {
     const thisMonth = new Date().getMonth() + 1;
 
     const unsubscribe = onSnapshot(
-      query(collection(db, 'birthdayGifts'), where('year', '==', thisYear), where('month', '==', thisMonth)),
+      query(collection(null as any /* firebase removed */, 'birthdayGifts'), where('year', '==', thisYear), where('month', '==', thisMonth)),
       (snapshot) => {
         const gifts: Record<string, GiftStatus> = {};
         snapshot.docs.forEach(docSnap => {
@@ -131,7 +133,7 @@ export const DashboardCSKH: React.FC = () => {
     const thisYear = new Date().getFullYear();
     const thisMonth = new Date().getMonth() + 1;
     const docId = `${studentId}_${thisYear}_${thisMonth}`;
-    const docRef = doc(db, 'birthdayGifts', docId);
+    const docRef = doc(null as any /* firebase removed */, 'birthdayGifts', docId);
 
     const currentStatus = giftStatus[studentId]?.[field] || false;
     const newStatus = !currentStatus;
@@ -176,22 +178,25 @@ export const DashboardCSKH: React.FC = () => {
         };
 
         // Fetch students
-        const studentsSnap = await getDocs(collection(db, 'students'));
-        const allStudents = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const allStudents = (await StudentService.getStudents()).map((student: any) => ({
+          ...student,
+          className: student.className || student.class,
+          currentClassName: student.currentClassName || student.class,
+          hasDebt: student.hasDebt || student.status === 'Nợ phí',
+        }));
         const students = filterByBranch(allStudents);
 
         // Fetch classes
-        const classesSnap = await getDocs(collection(db, 'classes'));
-        const allClasses = classesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const allClasses = await ClassService.getClasses();
         const classes = filterByBranch(allClasses);
 
         // Fetch staff
-        const staffSnap = await getDocs(collection(db, 'staff'));
+        const staffSnap = await getDocs(collection(null as any /* firebase removed */, 'staff'));
         const allStaff = staffSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const staffList = filterByBranch(allStaff);
 
         // Fetch work sessions
-        const workSessionsSnap = await getDocs(collection(db, 'workSessions'));
+        const workSessionsSnap = await getDocs(collection(null as any /* firebase removed */, 'workSessions'));
         const workSessions = workSessionsSnap.docs.map(d => d.data());
 
         // Calculate student stats by status
@@ -231,7 +236,7 @@ export const DashboardCSKH: React.FC = () => {
         }).length;
 
         // Fetch contracts for latest contract date (filtered by student branch)
-        const contractsSnap = await getDocs(collection(db, 'contracts'));
+        const contractsSnap = await getDocs(collection(null as any /* firebase removed */, 'contracts'));
         const allContracts = contractsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const studentIds = new Set(students.map((s: any) => s.id));
         const contracts = selectedBranch === 'all'
@@ -418,18 +423,25 @@ export const DashboardCSKH: React.FC = () => {
           })
           .sort((a, b) => a.dayOfMonth - b.dayOfMonth);
 
-        // Revenue data (for Leader only - mock for now)
-        const salesData = isCSKHLeader ? [
-          { name: 'Học phí mới', value: 45000000, color: PIE_COLORS[0] },
-          { name: 'Tái phí', value: 30000000, color: PIE_COLORS[1] },
-          { name: 'Tutoring', value: 15000000, color: PIE_COLORS[2] },
-        ] : [];
+        let salesData: { name: string; value: number; color: string }[] = [];
+        let revenueData: { month: string; expected: number; actual: number }[] = [];
 
-        const revenueData = isCSKHLeader ? [
-          { month: 'T10', expected: 100000000, actual: 95000000 },
-          { month: 'T11', expected: 110000000, actual: 108000000 },
-          { month: 'T12', expected: 120000000, actual: 90000000 },
-        ] : [];
+        if (isCSKHLeader) {
+          const revenueSummary = await getRevenueSummary(currentYear, selectedBranch);
+          const currentMonthLabel = `T${thisMonth}`;
+          const currentMonthRevenue = revenueSummary.byMonth.find((item) => item.month === currentMonthLabel);
+
+          salesData = revenueSummary.byCategory.map((item) => ({
+            name: item.category,
+            value: item.amount,
+            color: item.color,
+          }));
+          revenueData = currentMonthRevenue ? [
+            { month: 'Kỳ vọng', expected: currentMonthRevenue.expectedRevenue, actual: 0 },
+            { month: 'Thực tế', expected: 0, actual: currentMonthRevenue.totalRevenue },
+            { month: 'Chênh lệch', expected: 0, actual: Math.max(currentMonthRevenue.expectedRevenue - currentMonthRevenue.totalRevenue, 0) },
+          ] : [];
+        }
 
         setStats({
           totalStudents: students.filter((s: any) => s.status === 'Đang học').length,
@@ -518,10 +530,13 @@ export const DashboardCSKH: React.FC = () => {
         {isCSKHLeader && (
           <>
             <div className="col-span-4">
-              <RevenueChart data={stats.salesData} title="Doanh số bán hàng" />
+              <RevenueChart data={stats.salesData} />
             </div>
             <div className="col-span-4">
-              <SalesChart data={stats.revenueData} />
+              <SalesChart
+                data={stats.revenueData}
+                totalRevenue={stats.salesData.reduce((sum, item) => sum + item.value, 0)}
+              />
             </div>
           </>
         )}

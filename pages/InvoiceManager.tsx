@@ -10,6 +10,7 @@ import { useInvoices } from '../src/hooks/useInvoices';
 import { Invoice, InvoiceItem, InvoiceStatus } from '../src/services/invoiceService';
 import { formatCurrency } from '../src/utils/currencyUtils';
 import { usePermissions } from '../src/hooks/usePermissions';
+import { generateMonthlyInvoicesPreview, CalculationMethod } from '../src/services/monthlyInvoiceService';
 
 const STATUS_COLORS: Record<InvoiceStatus, string> = {
   'Chờ thanh toán': 'bg-yellow-100 text-yellow-700',
@@ -18,7 +19,7 @@ const STATUS_COLORS: Record<InvoiceStatus, string> = {
 };
 
 export const InvoiceManager: React.FC = () => {
-  const { invoices, loading, error, totalRevenue, pendingCount, createInvoice, markAsPaid, cancelInvoice, deleteInvoice } = useInvoices();
+  const { invoices, loading, error, totalRevenue, pendingCount, createInvoice, createBulkInvoices, markAsPaid, cancelInvoice, deleteInvoice } = useInvoices();
   
   // Permissions
   const { canCreate, canDelete, requiresApproval, isAdmin } = usePermissions();
@@ -29,7 +30,9 @@ export const InvoiceManager: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | ''>('');
   const [showModal, setShowModal] = useState(false);
+  const [showMonthlyModal, setShowMonthlyModal] = useState(false);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [billInvoice, setBillInvoice] = useState<Invoice | null>(null);
 
   const handleMarkPaid = async (id: string) => {
     try {
@@ -87,8 +90,8 @@ export const InvoiceManager: React.FC = () => {
               <FileText className="text-blue-600" size={24} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-gray-800">Hóa đơn bán sách</h2>
-              <p className="text-sm text-gray-500">Quản lý hóa đơn bán sản phẩm</p>
+              <h2 className="text-lg font-bold text-gray-800">Hóa đơn học phí</h2>
+              <p className="text-sm text-gray-500">Quản lý hóa đơn học phí</p>
             </div>
           </div>
           <div className="flex gap-3">
@@ -99,12 +102,20 @@ export const InvoiceManager: React.FC = () => {
               Chờ TT: {pendingCount}
             </span>
             {canCreateInvoice && (
-              <button
-                onClick={() => setShowModal(true)}
-                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm font-medium"
-              >
-                <Plus size={16} /> Tạo hóa đơn
-              </button>
+              <>
+                <button
+                  onClick={() => setShowMonthlyModal(true)}
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 text-sm font-medium"
+                >
+                  <Plus size={16} /> Tạo hóa đơn tháng
+                </button>
+                <button
+                  onClick={() => setShowModal(true)}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm font-medium"
+                >
+                  <Plus size={16} /> Tạo hóa đơn lẻ
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -206,6 +217,13 @@ export const InvoiceManager: React.FC = () => {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-center gap-1">
+                      <button
+                        onClick={() => setBillInvoice(invoice)}
+                        className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                        title="In bill"
+                      >
+                        <Printer size={16} />
+                      </button>
                       {invoice.status === 'Chờ thanh toán' && (
                         <>
                           <button
@@ -252,7 +270,266 @@ export const InvoiceManager: React.FC = () => {
           }}
         />
       )}
+
+      {/* Monthly Generator Modal */}
+      {showMonthlyModal && (
+        <MonthlyInvoiceModal
+          onClose={() => setShowMonthlyModal(false)}
+          onSubmit={async (invoices) => {
+            await createBulkInvoices(invoices);
+            setShowMonthlyModal(false);
+          }}
+        />
+      )}
+
+      {billInvoice && (
+        <InvoiceBillModal
+          invoice={billInvoice}
+          onClose={() => setBillInvoice(null)}
+        />
+      )}
     </div>
+  );
+};
+
+const escapeHtml = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const printInvoiceBill = (invoice: Invoice) => {
+  const printWindow = window.open('', '_blank', 'width=900,height=700');
+  if (!printWindow) {
+    alert('Trình duyệt đang chặn cửa sổ in. Vui lòng cho phép popup và thử lại.');
+    return;
+  }
+
+  const createdDate = invoice.createdAt
+    ? new Date(invoice.createdAt).toLocaleDateString('vi-VN')
+    : new Date().toLocaleDateString('vi-VN');
+  const paidDate = invoice.paidAt ? new Date(invoice.paidAt).toLocaleDateString('vi-VN') : '-';
+  const rows = invoice.items.map((item, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${escapeHtml(item.productName)}</td>
+      <td class="center">${item.quantity}</td>
+      <td class="right">${formatCurrency(item.unitPrice)}</td>
+      <td class="right">${formatCurrency(item.total)}</td>
+    </tr>
+  `).join('');
+
+  printWindow.document.write(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(invoice.invoiceCode || 'Bill')}</title>
+        <style>
+          * { box-sizing: border-box; }
+          body { margin: 0; background: #f3f4f6; color: #111827; font-family: Arial, sans-serif; }
+          .actions { position: sticky; top: 0; padding: 12px; background: #111827; text-align: center; }
+          .actions button { border: 0; border-radius: 8px; padding: 10px 16px; background: #2563eb; color: white; font-weight: 700; cursor: pointer; }
+          .page { width: 210mm; min-height: 297mm; margin: 0 auto; padding: 18mm; background: white; }
+          .header { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #2563eb; padding-bottom: 16px; }
+          .brand { display: flex; gap: 12px; align-items: center; }
+          .logo { width: 64px; height: 64px; object-fit: contain; border-radius: 8px; }
+          h1 { margin: 0; font-size: 26px; letter-spacing: 0; color: #1d4ed8; }
+          h2 { margin: 0 0 6px; font-size: 18px; }
+          .muted { color: #6b7280; font-size: 13px; line-height: 1.45; }
+          .code { text-align: right; }
+          .section { margin-top: 22px; }
+          .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 28px; }
+          .label { color: #6b7280; font-size: 12px; text-transform: uppercase; margin-bottom: 3px; }
+          .value { font-weight: 700; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+          th { background: #eff6ff; color: #1e40af; font-size: 12px; text-transform: uppercase; }
+          th, td { border: 1px solid #d1d5db; padding: 10px; vertical-align: top; }
+          .center { text-align: center; }
+          .right { text-align: right; }
+          .summary { width: 330px; margin-left: auto; margin-top: 16px; }
+          .line { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #e5e7eb; }
+          .total { font-size: 20px; color: #1d4ed8; font-weight: 800; border-bottom: 0; }
+          .note { min-height: 72px; border: 1px solid #d1d5db; padding: 10px; margin-top: 8px; white-space: pre-wrap; }
+          .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; margin-top: 44px; text-align: center; }
+          .signature-space { height: 72px; }
+          @media print {
+            body { background: white; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .actions { display: none; }
+            .page { margin: 0; width: auto; min-height: auto; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="actions"><button onclick="window.print()">In bill</button></div>
+        <main class="page">
+          <div class="header">
+            <div class="brand">
+              <img class="logo" src="/logo.jpg" alt="Logo" />
+              <div>
+                <h2>EDU MANAGER PRO</h2>
+                <div class="muted">Phiếu thu / hóa đơn dịch vụ</div>
+              </div>
+            </div>
+            <div class="code">
+              <h1>BILL</h1>
+              <div class="muted">Mã: <strong>${escapeHtml(invoice.invoiceCode || '-')}</strong></div>
+              <div class="muted">Ngày: ${createdDate}</div>
+            </div>
+          </div>
+
+          <section class="section grid">
+            <div><div class="label">Khách hàng</div><div class="value">${escapeHtml(invoice.customerName || '-')}</div></div>
+            <div><div class="label">Số điện thoại</div><div class="value">${escapeHtml(invoice.customerPhone || '-')}</div></div>
+            <div><div class="label">Học sinh</div><div class="value">${escapeHtml(invoice.studentName || '-')}</div></div>
+            <div><div class="label">Trạng thái</div><div class="value">${escapeHtml(invoice.status || '-')}</div></div>
+            <div><div class="label">Hình thức thanh toán</div><div class="value">${escapeHtml(invoice.paymentMethod || '-')}</div></div>
+            <div><div class="label">Ngày thanh toán</div><div class="value">${paidDate}</div></div>
+          </section>
+
+          <section class="section">
+            <div class="label">Chi tiết</div>
+            <table>
+              <thead>
+                <tr><th>STT</th><th>Nội dung</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th></tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </section>
+
+          <section class="summary">
+            <div class="line"><span>Tạm tính</span><strong>${formatCurrency(invoice.subtotal)}</strong></div>
+            <div class="line"><span>Giảm giá</span><strong>${formatCurrency(invoice.discount || 0)}</strong></div>
+            <div class="line total"><span>Tổng cộng</span><span>${formatCurrency(invoice.total)}</span></div>
+          </section>
+
+          <section class="section">
+            <div class="label">Ghi chú</div>
+            <div class="note">${escapeHtml(invoice.note || '')}</div>
+          </section>
+
+          <section class="signatures">
+            <div><strong>Người lập phiếu</strong><div class="signature-space"></div><div class="muted">(Ký, ghi rõ họ tên)</div></div>
+            <div><strong>Người nộp tiền</strong><div class="signature-space"></div><div class="muted">(Ký, ghi rõ họ tên)</div></div>
+          </section>
+        </main>
+      </body>
+    </html>
+  `);
+  printWindow.document.close();
+  printWindow.focus();
+};
+
+interface InvoiceBillModalProps {
+  invoice: Invoice;
+  onClose: () => void;
+}
+
+const InvoiceBillModal: React.FC<InvoiceBillModalProps> = ({ invoice, onClose }) => {
+  const createdDate = invoice.createdAt
+    ? new Date(invoice.createdAt).toLocaleDateString('vi-VN')
+    : new Date().toLocaleDateString('vi-VN');
+
+  return (
+    <ModalPortal>
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+          <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+            <div>
+              <h3 className="text-xl font-bold text-gray-800">Bill {invoice.invoiceCode}</h3>
+              <p className="text-sm text-gray-500">Form bill đã điền sẵn thông tin hóa đơn</p>
+            </div>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+              <X size={24} />
+            </button>
+          </div>
+
+          <div className="p-6 overflow-y-auto bg-gray-100">
+            <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
+              <div className="flex justify-between gap-4 border-b-2 border-blue-600 pb-4">
+                <div className="flex items-center gap-3">
+                  <img src="/logo.jpg" alt="Edu Manager Pro" className="w-14 h-14 object-contain rounded-lg" />
+                  <div>
+                    <div className="font-bold text-gray-900">EDU MANAGER PRO</div>
+                    <div className="text-sm text-gray-500">Phiếu thu / hóa đơn dịch vụ</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-2xl font-extrabold text-blue-700">BILL</div>
+                  <div className="text-sm text-gray-500">Mã: <span className="font-mono font-semibold text-gray-800">{invoice.invoiceCode}</span></div>
+                  <div className="text-sm text-gray-500">Ngày: {createdDate}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5 text-sm">
+                <div><div className="text-xs uppercase text-gray-500">Khách hàng</div><div className="font-semibold text-gray-900">{invoice.customerName || '-'}</div></div>
+                <div><div className="text-xs uppercase text-gray-500">Số điện thoại</div><div className="font-semibold text-gray-900">{invoice.customerPhone || '-'}</div></div>
+                <div><div className="text-xs uppercase text-gray-500">Học sinh</div><div className="font-semibold text-gray-900">{invoice.studentName || '-'}</div></div>
+                <div><div className="text-xs uppercase text-gray-500">Trạng thái</div><div className="font-semibold text-gray-900">{invoice.status}</div></div>
+              </div>
+
+              <div className="mt-5 overflow-x-auto">
+                <table className="w-full text-sm border border-gray-200">
+                  <thead className="bg-blue-50 text-blue-800">
+                    <tr>
+                      <th className="px-3 py-2 border border-gray-200 text-left">Nội dung</th>
+                      <th className="px-3 py-2 border border-gray-200 text-center">SL</th>
+                      <th className="px-3 py-2 border border-gray-200 text-right">Đơn giá</th>
+                      <th className="px-3 py-2 border border-gray-200 text-right">Thành tiền</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {invoice.items.map((item, index) => (
+                      <tr key={`${item.productId || item.productName}-${index}`}>
+                        <td className="px-3 py-2 border border-gray-200">{item.productName}</td>
+                        <td className="px-3 py-2 border border-gray-200 text-center">{item.quantity}</td>
+                        <td className="px-3 py-2 border border-gray-200 text-right">{formatCurrency(item.unitPrice)}</td>
+                        <td className="px-3 py-2 border border-gray-200 text-right font-semibold">{formatCurrency(item.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-5 ml-auto max-w-xs space-y-2 text-sm">
+                <div className="flex justify-between"><span>Tạm tính</span><span className="font-semibold">{formatCurrency(invoice.subtotal)}</span></div>
+                <div className="flex justify-between"><span>Giảm giá</span><span className="font-semibold">{formatCurrency(invoice.discount || 0)}</span></div>
+                <div className="flex justify-between border-t border-gray-200 pt-2 text-lg font-extrabold text-blue-700">
+                  <span>Tổng cộng</span>
+                  <span>{formatCurrency(invoice.total)}</span>
+                </div>
+              </div>
+
+              {invoice.note && (
+                <div className="mt-5 text-sm">
+                  <div className="text-xs uppercase text-gray-500 mb-1">Ghi chú</div>
+                  <div className="border border-gray-200 rounded-lg p-3 text-gray-700">{invoice.note}</div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 px-6 py-4 flex gap-3 justify-end bg-gray-50">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100"
+            >
+              Đóng
+            </button>
+            <button
+              type="button"
+              onClick={() => printInvoiceBill(invoice)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <Printer size={16} /> In bill
+            </button>
+          </div>
+        </div>
+      </div>
+    </ModalPortal>
   );
 };
 
@@ -482,6 +759,167 @@ const InvoiceModal: React.FC<InvoiceModalProps> = ({ onClose, onSubmit }) => {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+    </ModalPortal>
+  );
+};
+
+// Monthly Invoice Modal
+interface MonthlyInvoiceModalProps {
+  onClose: () => void;
+  onSubmit: (invoices: Omit<Invoice, 'id' | 'invoiceCode'>[]) => Promise<void>;
+}
+
+const MonthlyInvoiceModal: React.FC<MonthlyInvoiceModalProps> = ({ onClose, onSubmit }) => {
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [method, setMethod] = useState<CalculationMethod>('per_session');
+  const [preview, setPreview] = useState<Omit<Invoice, 'id' | 'invoiceCode'>[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  const handlePreview = async () => {
+    setLoading(true);
+    try {
+      const data = await generateMonthlyInvoicesPreview(month, year, method);
+      setPreview(data);
+      if (data.length === 0) {
+        alert('Không tìm thấy dữ liệu điểm danh nào trong tháng này để tạo hóa đơn.');
+      }
+    } catch (err) {
+      alert(`Lỗi: ${err instanceof Error ? err.message : 'Không xác định'}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (preview.length === 0) return;
+    setGenerating(true);
+    try {
+      await onSubmit(preview);
+    } catch (err) {
+      alert(`Lỗi: ${err instanceof Error ? err.message : 'Không xác định'}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const totalEstimated = preview.reduce((sum, inv) => sum + inv.total, 0);
+
+  return (
+    <ModalPortal>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col">
+        <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+          <h3 className="text-xl font-bold text-gray-800">Tạo hóa đơn học phí hàng tháng</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X size={24} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-4 flex-1 overflow-y-auto">
+          <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 mb-4">
+            <h4 className="font-semibold text-blue-800 mb-2">Cấu hình tạo hóa đơn</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-blue-900 mb-1">Tháng</label>
+                <select
+                  value={month}
+                  onChange={(e) => setMonth(parseInt(e.target.value))}
+                  className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+                >
+                  {Array.from({ length: 12 }).map((_, i) => (
+                    <option key={i + 1} value={i + 1}>Tháng {i + 1}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-blue-900 mb-1">Năm</label>
+                <input
+                  type="number"
+                  value={year}
+                  onChange={(e) => setYear(parseInt(e.target.value))}
+                  className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-blue-900 mb-1">Cách tính học phí</label>
+                <select
+                  value={method}
+                  onChange={(e) => setMethod(e.target.value as CalculationMethod)}
+                  className="w-full px-3 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="per_session">Tính theo số buổi học (Học phí / Tổng số buổi * Số buổi đi học)</option>
+                  <option value="fixed_monthly">Học phí cố định (Lấy mức Học phí của lớp)</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={handlePreview}
+                disabled={loading}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
+              >
+                {loading ? 'Đang tải...' : 'Xem trước danh sách hóa đơn'}
+              </button>
+            </div>
+          </div>
+
+          {preview.length > 0 && (
+            <div className="border border-gray-200 rounded-xl overflow-hidden">
+              <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
+                <span className="font-semibold text-gray-700">Danh sách tạm tính ({preview.length} hóa đơn)</span>
+                <span className="text-sm font-medium text-green-600">Tổng thu dự kiến: {formatCurrency(totalEstimated)}</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                    <tr>
+                      <th className="px-4 py-2">Học sinh</th>
+                      <th className="px-4 py-2">Chi tiết</th>
+                      <th className="px-4 py-2 text-right">Thành tiền</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {preview.map((inv, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium text-gray-900">{inv.studentName}</td>
+                        <td className="px-4 py-2 text-gray-600 text-xs">
+                          {inv.items.map((item, i) => (
+                            <div key={i}>• {item.productName}</div>
+                          ))}
+                        </td>
+                        <td className="px-4 py-2 text-right font-semibold text-gray-900">
+                          {formatCurrency(inv.total)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-gray-200 px-6 py-4 flex gap-3 justify-end bg-gray-50">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100"
+          >
+            Đóng
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={preview.length === 0 || generating}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+          >
+            {generating ? 'Đang lưu...' : 'Lưu tất cả hóa đơn'}
+          </button>
+        </div>
       </div>
     </div>
     </ModalPortal>

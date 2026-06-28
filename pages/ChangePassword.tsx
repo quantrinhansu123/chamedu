@@ -1,13 +1,11 @@
 /**
- * ChangePassword Page
- * Allows users to change their password
+ * ChangePassword Page — đổi mật khẩu trong bảng users
  */
 
 import React, { useState } from 'react';
 import { Key, Eye, EyeOff, Shield, AlertCircle, CheckCircle } from 'lucide-react';
 import { useAuth } from '../src/hooks/useAuth';
-import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
-import { auth } from '../src/config/firebase';
+import { AuthService } from '../src/services/authService';
 
 export const ChangePassword: React.FC = () => {
   const { user } = useAuth();
@@ -43,7 +41,7 @@ export const ChangePassword: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!user || !user.email) {
+    if (!user?.uid) {
       setMessage({ type: 'error', text: 'Không tìm thấy thông tin người dùng.' });
       return;
     }
@@ -62,27 +60,20 @@ export const ChangePassword: React.FC = () => {
     setMessage(null);
 
     try {
-      // Re-authenticate user with current password
-      const credential = EmailAuthProvider.credential(user.email, formData.currentPassword);
-      await reauthenticateWithCredential(user, credential);
-
-      // Update password
-      await updatePassword(user, formData.newPassword);
-
+      const ok = await AuthService.changePassword(
+        user.uid,
+        formData.currentPassword,
+        formData.newPassword
+      );
+      if (!ok) {
+        setMessage({ type: 'error', text: 'Mật khẩu hiện tại không đúng.' });
+        return;
+      }
       setMessage({ type: 'success', text: 'Đổi mật khẩu thành công!' });
       setFormData({ currentPassword: '', newPassword: '', confirmPassword: '' });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error changing password:', error);
-
-      if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
-        setMessage({ type: 'error', text: 'Mật khẩu hiện tại không đúng.' });
-      } else if (error.code === 'auth/weak-password') {
-        setMessage({ type: 'error', text: 'Mật khẩu mới quá yếu. Vui lòng chọn mật khẩu mạnh hơn.' });
-      } else if (error.code === 'auth/requires-recent-login') {
-        setMessage({ type: 'error', text: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.' });
-      } else {
-        setMessage({ type: 'error', text: 'Có lỗi xảy ra. Vui lòng thử lại sau.' });
-      }
+      setMessage({ type: 'error', text: 'Có lỗi xảy ra. Vui lòng thử lại sau.' });
     } finally {
       setSaving(false);
     }
@@ -91,7 +82,6 @@ export const ChangePassword: React.FC = () => {
   return (
     <div className="max-w-lg mx-auto">
       <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-        {/* Header */}
         <div className="p-6 border-b border-gray-200">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-100 rounded-lg">
@@ -104,15 +94,15 @@ export const ChangePassword: React.FC = () => {
           </div>
         </div>
 
-        {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {/* Message */}
           {message && (
-            <div className={`p-3 rounded-lg text-sm flex items-start gap-2 ${
-              message.type === 'success'
-                ? 'bg-green-50 text-green-700 border border-green-200'
-                : 'bg-red-50 text-red-700 border border-red-200'
-            }`}>
+            <div
+              className={`p-3 rounded-lg text-sm flex items-start gap-2 ${
+                message.type === 'success'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : 'bg-red-50 text-red-700 border border-red-200'
+              }`}
+            >
               {message.type === 'success' ? (
                 <CheckCircle className="w-5 h-5 flex-shrink-0" />
               ) : (
@@ -122,18 +112,14 @@ export const ChangePassword: React.FC = () => {
             </div>
           )}
 
-          {/* Current Password */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Mật khẩu hiện tại
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Mật khẩu hiện tại</label>
             <div className="relative">
               <input
                 type={showPasswords.current ? 'text' : 'password'}
                 value={formData.currentPassword}
                 onChange={(e) => setFormData({ ...formData, currentPassword: e.target.value })}
                 className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="Nhập mật khẩu hiện tại"
                 required
               />
               <button
@@ -146,18 +132,14 @@ export const ChangePassword: React.FC = () => {
             </div>
           </div>
 
-          {/* New Password */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Mật khẩu mới
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Mật khẩu mới</label>
             <div className="relative">
               <input
                 type={showPasswords.new ? 'text' : 'password'}
                 value={formData.newPassword}
                 onChange={(e) => setFormData({ ...formData, newPassword: e.target.value })}
                 className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="Nhập mật khẩu mới"
                 required
               />
               <button
@@ -168,47 +150,18 @@ export const ChangePassword: React.FC = () => {
                 {showPasswords.new ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
               </button>
             </div>
-
-            {/* Password Requirements */}
-            {formData.newPassword && (
-              <div className="mt-2 p-3 bg-gray-50 rounded-lg space-y-1">
-                <p className="text-xs font-medium text-gray-600 mb-2">Yêu cầu mật khẩu:</p>
-                <div className={`text-xs flex items-center gap-1 ${passwordChecks.length ? 'text-green-600' : 'text-gray-400'}`}>
-                  {passwordChecks.length ? <CheckCircle className="w-3 h-3" /> : <div className="w-3 h-3 rounded-full border border-current" />}
-                  Ít nhất 8 ký tự
-                </div>
-                <div className={`text-xs flex items-center gap-1 ${passwordChecks.uppercase ? 'text-green-600' : 'text-gray-400'}`}>
-                  {passwordChecks.uppercase ? <CheckCircle className="w-3 h-3" /> : <div className="w-3 h-3 rounded-full border border-current" />}
-                  Có chữ hoa (A-Z)
-                </div>
-                <div className={`text-xs flex items-center gap-1 ${passwordChecks.lowercase ? 'text-green-600' : 'text-gray-400'}`}>
-                  {passwordChecks.lowercase ? <CheckCircle className="w-3 h-3" /> : <div className="w-3 h-3 rounded-full border border-current" />}
-                  Có chữ thường (a-z)
-                </div>
-                <div className={`text-xs flex items-center gap-1 ${passwordChecks.number ? 'text-green-600' : 'text-gray-400'}`}>
-                  {passwordChecks.number ? <CheckCircle className="w-3 h-3" /> : <div className="w-3 h-3 rounded-full border border-current" />}
-                  Có số (0-9)
-                </div>
-              </div>
-            )}
           </div>
 
-          {/* Confirm Password */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Xác nhận mật khẩu mới
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Xác nhận mật khẩu mới</label>
             <div className="relative">
               <input
                 type={showPasswords.confirm ? 'text' : 'password'}
                 value={formData.confirmPassword}
                 onChange={(e) => setFormData({ ...formData, confirmPassword: e.target.value })}
-                className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${
-                  formData.confirmPassword && !doPasswordsMatch
-                    ? 'border-red-300 bg-red-50'
-                    : 'border-gray-300'
+                className={`w-full px-3 py-2 pr-10 border rounded-lg focus:ring-2 focus:ring-indigo-500 ${
+                  formData.confirmPassword && !doPasswordsMatch ? 'border-red-300' : 'border-gray-300'
                 }`}
-                placeholder="Nhập lại mật khẩu mới"
                 required
               />
               <button
@@ -219,23 +172,14 @@ export const ChangePassword: React.FC = () => {
                 {showPasswords.confirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
               </button>
             </div>
-            {formData.confirmPassword && !doPasswordsMatch && (
-              <p className="text-xs text-red-500 mt-1">Mật khẩu xác nhận không khớp</p>
-            )}
           </div>
 
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={saving || !isPasswordValid || !doPasswordsMatch || !formData.currentPassword}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
           >
-            {saving ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                Đang xử lý...
-              </>
-            ) : (
+            {saving ? 'Đang xử lý...' : (
               <>
                 <Key className="w-4 h-4" />
                 Đổi mật khẩu

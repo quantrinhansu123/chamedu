@@ -1,21 +1,26 @@
 /**
  * StudentsInClassModal Component
  * Modal for managing students enrolled in a class
- * Extracted from pages/ClassManager.tsx for modularity
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { X, Users, Search, UserPlus, UserMinus, ArrowRightLeft, ExternalLink } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { X, Users, Search, UserPlus, UserMinus, ArrowRightLeft } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
-import { ClassModel, Student } from '@/types';
-import { collection, doc, updateDoc, arrayUnion, arrayRemove, addDoc, onSnapshot } from 'firebase/firestore';
-import { db } from '@/src/config/firebase';
-import { removeStudentFromClass as adminRemoveStudent } from '@/src/services/adminFixService';
+import { ClassModel, Student, StudentStatus } from '@/types';
+import { StudentService } from '@/src/services/studentService';
+import { createEnrollment } from '@/src/services/enrollmentService';
 import { TransferClassModal } from '@/src/features/students/components/TransferClassModal';
 import { useClasses } from '@/src/hooks/useClasses';
 import { useAuth } from '@/src/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStudentSessionData } from '@/src/utils/student-session-utils';
+import { sanitizeFirebaseError } from '@/src/utils/errorUtils';
+import { isSupabaseConfigured } from '@/src/config/supabase';
+
+const isStudentInClass = (student: Student, classData: ClassModel): boolean =>
+  student.classId === classData.id ||
+  (student.classIds || []).includes(classData.id) ||
+  student.class === classData.name;
 
 export interface StudentsInClassModalProps {
   classData: ClassModel;
@@ -25,8 +30,8 @@ export interface StudentsInClassModalProps {
 
 export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ classData, onClose, onUpdate }) => {
   const navigate = useNavigate();
-  const [studentsInClass, setStudentsInClass] = useState<any[]>([]);
-  const [allStudents, setAllStudents] = useState<any[]>([]);
+  const [studentsInClass, setStudentsInClass] = useState<Student[]>([]);
+  const [allStudents, setAllStudents] = useState<Student[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(true);
@@ -37,14 +42,6 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
   const [selectedStudentToTransfer, setSelectedStudentToTransfer] = useState<any>(null);
   const { classes: allClasses } = useClasses({});
   const { staffData } = useAuth();
-
-  // Enrollment confirmation modal state
-  const [showEnrollModal, setShowEnrollModal] = useState(false);
-  const [selectedStudentToAdd, setSelectedStudentToAdd] = useState<any>(null);
-  const [enrollForm, setEnrollForm] = useState({
-    sessions: 12,
-    startDate: new Date().toISOString().split('T')[0],
-  });
 
   // Normalize student status
   const normalizeStatus = (status: string): string => {
@@ -70,139 +67,96 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
     }
   };
 
-  // Realtime listener for students - Bug 1 fix
-  useEffect(() => {
-    setLoading(true);
-
-    // Subscribe to students collection with onSnapshot for realtime updates
-    const unsubscribe = onSnapshot(
-      collection(db, 'students'),
-      (snapshot) => {
-        const students = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-
-        // Students in this class (match by classId, classIds array, className, or class field)
-        const inClass = students.filter((s: any) =>
-          s.classId === classData.id ||
-          s.classIds?.includes(classData.id) ||
-          s.className === classData.name ||
-          s.class === classData.name
-        );
-
-        // Students not in this class (available to add)
-        const notInClass = students.filter((s: any) =>
-          s.classId !== classData.id &&
-          !s.classIds?.includes(classData.id) &&
-          s.className !== classData.name &&
-          s.class !== classData.name
-        );
-
-        setStudentsInClass(inClass);
-        setAllStudents(notInClass);
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Error listening to students:', error);
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [classData.id, classData.name]);
-
-  // Open enrollment modal when adding student
-  const addStudentToClass = (student: any) => {
-    setSelectedStudentToAdd(student);
-    // Calculate remaining sessions from class data
-    // Parse progress to get remaining sessions (e.g., "12/24 Buổi" -> 24 - 12 = 12)
-    let defaultSessions = classData.totalSessions || 12;
-    if (classData.progress) {
-      const match = classData.progress.match(/(\d+)\/(\d+)/);
-      if (match) {
-        const completed = parseInt(match[1]);
-        const total = parseInt(match[2]);
-        defaultSessions = Math.max(1, total - completed);
-      }
+  const fetchStudents = useCallback(async () => {
+    if (!isSupabaseConfigured) {
+      setLoading(false);
+      return;
     }
-    setEnrollForm({
-      sessions: defaultSessions,
-      startDate: new Date().toISOString().split('T')[0],
-    });
-    setShowEnrollModal(true);
-  };
+    setLoading(true);
+    try {
+      const students = await StudentService.getStudents();
+      const inClass = students.filter((s) => isStudentInClass(s, classData));
+      const notInClass = students.filter((s) => !isStudentInClass(s, classData));
+      setStudentsInClass(inClass);
+      setAllStudents(notInClass);
+    } catch (error) {
+      console.error('Error loading students:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [classData]);
 
-  // Confirm add student with enrollment
-  const confirmAddStudent = async () => {
-    if (!selectedStudentToAdd) return;
+  useEffect(() => {
+    fetchStudents();
+    const timer = setInterval(fetchStudents, 15000);
+    return () => clearInterval(timer);
+  }, [fetchStudents]);
 
+  // Add student directly without prompting for session count.
+  const addStudentToClass = async (student: Student) => {
+    if (adding) return;
     setAdding(true);
     try {
-      const studentRef = doc(db, 'students', selectedStudentToAdd.id);
+      const classIds = student.classIds || [];
+      const newClassIds = classIds.includes(classData.id) ? classIds : [...classIds, classData.id];
 
-      // Update student with classId, sessions, and add to classIds array
-      await updateDoc(studentRef, {
+      await StudentService.updateStudent(student.id, {
         classId: classData.id,
-        className: classData.name,
         class: classData.name,
-        classIds: arrayUnion(classData.id),
-        registeredSessions: (selectedStudentToAdd.registeredSessions || 0) + enrollForm.sessions,
-        enrollmentDate: enrollForm.startDate,
-        status: 'Đang học',
+        classIds: newClassIds,
+        status: StudentStatus.ACTIVE,
       });
 
-      // Create enrollment record
-      await addDoc(collection(db, 'enrollments'), {
-        studentId: selectedStudentToAdd.id,
-        studentName: selectedStudentToAdd.fullName || selectedStudentToAdd.name,
-        studentCode: selectedStudentToAdd.code || '',
+      await createEnrollment({
+        studentId: student.id,
+        studentName: student.fullName,
         classId: classData.id,
         className: classData.name,
-        sessions: enrollForm.sessions,
-        startDate: enrollForm.startDate,
-        type: 'Ghi danh thủ công',
-        status: 'Đã xác nhận',
-        createdAt: new Date().toISOString(),
-        note: `Thêm vào lớp ${classData.name} từ Quản lý học viên`,
+        sessions: 0,
+        type: 'Ghi danh thu cong',
+        createdBy: staffData?.name || 'He thong',
+        staff: staffData?.name,
+        createdDate: new Date().toLocaleDateString('vi-VN'),
+        note: `Them vao lop ${classData.name} tu Quan ly hoc vien - khong tinh so buoi`,
       });
 
-      // Update local state
-      const updatedStudent = {
-        ...selectedStudentToAdd,
-        classId: classData.id,
-        className: classData.name,
-        registeredSessions: (selectedStudentToAdd.registeredSessions || 0) + enrollForm.sessions,
-        status: 'Đang học',
-      };
-      setStudentsInClass(prev => [...prev, updatedStudent]);
-      setAllStudents(prev => prev.filter(s => s.id !== selectedStudentToAdd.id));
-
-      setShowEnrollModal(false);
-      setSelectedStudentToAdd(null);
+      await fetchStudents();
       onUpdate();
-      alert('Đã thêm học viên và tạo ghi danh thành công!');
+      alert('Đã thêm học viên vào lớp thành công!');
     } catch (err) {
       console.error('Error adding student to class:', err);
-      alert('Không thể thêm học viên vào lớp');
+      alert(sanitizeFirebaseError(err));
     } finally {
       setAdding(false);
     }
   };
 
+
   // Remove student from class using admin fix service (cleans up attendance data)
-  const removeStudentFromClass = async (student: any) => {
-    if (!confirm(`Bạn có chắc muốn xóa ${student.fullName || student.name} khỏi lớp ${classData.name}? Tất cả dữ liệu điểm danh của học viên trong lớp này sẽ bị xoá.`)) return;
+  const removeStudentFromClass = async (student: Student) => {
+    if (!confirm(`Bạn có chắc muốn xóa ${student.fullName} khỏi lớp ${classData.name}?`)) return;
 
     try {
-      const result = await adminRemoveStudent(student.id, classData.id);
-      if (result.success) {
-        setStudentsInClass(prev => prev.filter(s => s.id !== student.id));
-        setAllStudents(prev => [...prev, { ...student, classId: null, className: null }]);
-        onUpdate();
-      } else {
-        alert(`Lỗi: ${result.error}`);
+      const classIds = (student.classIds || []).filter((id) => id !== classData.id);
+      const updates: Partial<Student> = { classIds };
+
+      if (student.classId === classData.id) {
+        if (classIds.length > 0) {
+          const otherClass = allClasses.find((c) => c.id === classIds[0]);
+          updates.classId = classIds[0];
+          updates.class = otherClass?.name || '';
+        } else {
+          updates.classId = '';
+          updates.class = '';
+        }
       }
+
+      await StudentService.updateStudent(student.id, updates);
+      await fetchStudents();
+      onUpdate();
     } catch (err) {
       console.error('Error removing student from class:', err);
-      alert('Không thể xóa học viên khỏi lớp');
+      alert(sanitizeFirebaseError(err));
     }
   };
 
@@ -213,46 +167,47 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
   };
 
   // Handle transfer class submission
-  const handleTransferSubmit = async (data: { newClassId: string; newClassName: string; sessions: number; note: string }) => {
+  const handleTransferSubmit = async (data: {
+    newClassId: string;
+    newClassName: string;
+    sessions: number;
+    note: string;
+  }) => {
     if (!selectedStudentToTransfer) return;
 
     try {
-      const studentRef = doc(db, 'students', selectedStudentToTransfer.id);
+      const student = selectedStudentToTransfer as Student;
+      const classIds = (student.classIds || []).filter((id) => id !== classData.id);
+      if (!classIds.includes(data.newClassId)) {
+        classIds.push(data.newClassId);
+      }
 
-      // Update student with new class
-      await updateDoc(studentRef, {
+      await StudentService.updateStudent(student.id, {
         classId: data.newClassId,
-        className: data.newClassName,
         class: data.newClassName,
-        classIds: arrayUnion(data.newClassId),
+        classIds,
         registeredSessions: data.sessions,
+        remainingSessions: data.sessions,
+        status: StudentStatus.ACTIVE,
       });
 
-      // Remove from old class's classIds
-      await updateDoc(studentRef, {
-        classIds: arrayRemove(classData.id),
-      });
-
-      // Create enrollment record for transfer
-      await addDoc(collection(db, 'enrollments'), {
-        studentId: selectedStudentToTransfer.id,
-        studentName: selectedStudentToTransfer.fullName || selectedStudentToTransfer.name,
-        studentCode: selectedStudentToTransfer.code || '',
+      await createEnrollment({
+        studentId: student.id,
+        studentName: student.fullName,
         classId: data.newClassId,
         className: data.newClassName,
-        oldClassId: classData.id,
-        oldClassName: classData.name,
         sessions: data.sessions,
         type: 'Chuyển lớp',
-        status: 'Đã xác nhận',
-        createdAt: new Date().toISOString(),
-        note: data.note,
+        createdBy: staffData?.name || 'Hệ thống',
+        staff: staffData?.name,
+        note: data.note || `Chuyển từ lớp ${classData.name}`,
       });
 
       setShowTransferModal(false);
       setSelectedStudentToTransfer(null);
+      await fetchStudents();
       onUpdate();
-      alert(`Đã chuyển ${selectedStudentToTransfer.fullName || selectedStudentToTransfer.name} sang lớp ${data.newClassName}`);
+      alert(`Đã chuyển ${student.fullName} sang lớp ${data.newClassName}`);
     } catch (err) {
       console.error('Error transferring student:', err);
       alert('Không thể chuyển lớp cho học viên');
@@ -270,7 +225,7 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
     if (!searchTerm) return allStudents.slice(0, 10); // Show first 10 by default
     const term = searchTerm.toLowerCase();
     return allStudents.filter(s =>
-      (s.fullName || s.name || '').toLowerCase().includes(term) ||
+      s.fullName.toLowerCase().includes(term) ||
       (s.code || '').toLowerCase().includes(term) ||
       (s.phone || '').includes(term)
     ).slice(0, 20);
@@ -349,7 +304,7 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
                           className="font-medium text-indigo-600 hover:text-indigo-800 hover:underline text-left"
                           title="Xem chi tiết học viên"
                         >
-                          {student.fullName || student.name}
+                          {student.fullName}
                         </button>
                         <span className="text-xs text-gray-500">({student.code})</span>
                       </div>
@@ -423,7 +378,7 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
                     className="flex items-center justify-between p-2.5 bg-white border border-gray-200 rounded-lg hover:border-blue-300 transition-colors"
                   >
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-800 text-sm truncate">{student.fullName || student.name}</p>
+                      <p className="font-medium text-gray-800 text-sm truncate">{student.fullName}</p>
                       <p className="text-xs text-gray-500">{student.code}</p>
                     </div>
                     <button
@@ -458,97 +413,6 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
         </div>
       </div>
 
-      {/* Enrollment Confirmation Modal */}
-      {showEnrollModal && selectedStudentToAdd && (
-        <ModalPortal>
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4"
-          onClick={() => { setShowEnrollModal(false); setSelectedStudentToAdd(null); }}
-          onMouseDown={(e) => { if (e.target === e.currentTarget) e.stopPropagation(); }}
-        >
-          <div
-            className="bg-white rounded-xl shadow-2xl max-w-md w-full"
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="p-5 border-b border-gray-200">
-              <h3 className="text-lg font-bold text-gray-900">Xác nhận ghi danh</h3>
-              <p className="text-sm text-gray-600 mt-1">Thêm học viên vào lớp {classData.name}</p>
-            </div>
-
-            <div className="p-5 space-y-4">
-              {/* Student Info */}
-              <div className="bg-gray-50 p-3 rounded-lg">
-                <p className="font-medium text-gray-800">{selectedStudentToAdd.fullName || selectedStudentToAdd.name}</p>
-                <p className="text-sm text-gray-500">Mã: {selectedStudentToAdd.code || 'N/A'}</p>
-              </div>
-
-              {/* Sessions */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Số buổi đăng ký <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  value={enrollForm.sessions}
-                  onChange={(e) => setEnrollForm(prev => ({ ...prev, sessions: parseInt(e.target.value) || 1 }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Start Date */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Ngày bắt đầu <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={enrollForm.startDate}
-                  onChange={(e) => setEnrollForm(prev => ({ ...prev, startDate: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-              </div>
-
-              {/* Summary */}
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm">
-                <p className="text-green-800">
-                  <span className="font-medium">Ghi danh thủ công:</span> {enrollForm.sessions} buổi,
-                  bắt đầu từ {new Date(enrollForm.startDate).toLocaleDateString('vi-VN')}
-                </p>
-              </div>
-            </div>
-
-            <div className="p-5 border-t border-gray-200 flex justify-end gap-3">
-              <button
-                onClick={() => { setShowEnrollModal(false); setSelectedStudentToAdd(null); }}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-                disabled={adding}
-              >
-                Hủy
-              </button>
-              <button
-                onClick={confirmAddStudent}
-                disabled={adding || enrollForm.sessions < 1}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
-              >
-                {adding ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Đang xử lý...
-                  </>
-                ) : (
-                  <>
-                    <UserPlus size={18} />
-                    Xác nhận thêm
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-        </ModalPortal>
-      )}
 
       {/* Transfer Class Modal - Bug 5 fix */}
       {showTransferModal && selectedStudentToTransfer && (

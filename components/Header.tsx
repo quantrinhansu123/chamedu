@@ -7,7 +7,7 @@ export const Header: React.FC<{ title: string }> = ({ title }) => {
       <h2 className="text-xl font-semibold text-gray-800 ml-10 lg:ml-0">{title}</h2>
 
       <div className="flex items-center gap-4">
-        <div className="hidden md:flex items-center bg-gray-100 rounded-lg px-3 py-1.5 border border-transparent focus-within:border-indigo-300 focus-within:ring-2 focus-within:ring-indigo-100 transition-all">
+        <div className="hidden md:flex items-center bg-gray-100 rounded-lg px-3 py-1.5 border border-transparent focus-within:border-[#FFB3A6] focus-within:ring-2 focus-within:ring-[#FFE5DF] transition-all">
           <Search size={18} className="text-gray-400" />
           <input
             type="text"

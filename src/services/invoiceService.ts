@@ -1,23 +1,4 @@
-/**
- * Invoice Service
- * Handle book/product invoices CRUD
- */
-
-import {
-  collection,
-  doc,
-  getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  query,
-  orderBy,
-} from 'firebase/firestore';
-import { db } from '../config/firebase';
-
-const INVOICES_COLLECTION = 'invoices';
-
-export type InvoiceStatus = 'Chờ thanh toán' | 'Đã thanh toán' | 'Đã hủy';
+import { supabase } from '../config/supabase';
 
 export interface InvoiceItem {
   productId: string;
@@ -26,7 +7,6 @@ export interface InvoiceItem {
   unitPrice: number;
   total: number;
 }
-
 export interface Invoice {
   id?: string;
   invoiceCode: string;
@@ -47,74 +27,129 @@ export interface Invoice {
   paidAt?: string;
 }
 
-const generateInvoiceCode = (): string => {
-  const date = new Date();
-  const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-  const random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-  return `INV${dateStr}-${random}`;
+export type InvoiceStatus = 'Chờ thanh toán' | 'Đã thanh toán' | 'Đã hủy';
+
+export const getInvoices = async (): Promise<Invoice[]> => {
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  
+  return (data || []).map(row => ({
+    id: row.id,
+    invoiceCode: row.invoice_code,
+    customerName: row.customer_name,
+    customerPhone: row.customer_phone,
+    studentId: row.student_id,
+    studentName: row.student_name,
+    items: row.items || [],
+    subtotal: row.subtotal,
+    discount: row.discount,
+    total: row.total,
+    status: row.status as InvoiceStatus,
+    paymentMethod: row.payment_method,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    paidAt: row.paid_at,
+  }));
+};
+
+const generateInvoiceCode = async (): Promise<string> => {
+  const timestamp = Date.now().toString().slice(-6);
+  return `INV${timestamp}`;
 };
 
 export const createInvoice = async (data: Omit<Invoice, 'id' | 'invoiceCode'>): Promise<string> => {
-  try {
-    const invoiceData = {
-      ...data,
-      invoiceCode: generateInvoiceCode(),
-      status: data.status || 'Chờ thanh toán',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const docRef = await addDoc(collection(db, INVOICES_COLLECTION), invoiceData);
-    return docRef.id;
-  } catch (error) {
-    console.error('Error creating invoice:', error);
-    throw new Error('Không thể tạo hóa đơn');
-  }
-};
-
-export const getInvoices = async (): Promise<Invoice[]> => {
-  try {
-    const q = query(collection(db, INVOICES_COLLECTION), orderBy('createdAt', 'desc'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-    } as Invoice));
-  } catch (error) {
-    console.error('Error getting invoices:', error);
-    throw new Error('Không thể tải danh sách hóa đơn');
-  }
+  const code = await generateInvoiceCode();
+  const payload = {
+    invoice_code: code,
+    customer_name: data.customerName,
+    customer_phone: data.customerPhone,
+    student_id: data.studentId,
+    student_name: data.studentName,
+    items: data.items,
+    subtotal: data.subtotal,
+    discount: data.discount,
+    total: data.total,
+    status: data.status,
+    payment_method: data.paymentMethod,
+    note: data.note,
+    created_by: data.createdBy,
+  };
+  
+  const { data: inserted, error } = await supabase
+    .from('invoices')
+    .insert(payload)
+    .select('id')
+    .single();
+  if (error) throw error;
+  return inserted.id;
 };
 
 export const updateInvoice = async (id: string, data: Partial<Invoice>): Promise<void> => {
-  try {
-    const docRef = doc(db, INVOICES_COLLECTION, id);
-    await updateDoc(docRef, {
-      ...data,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error('Error updating invoice:', error);
-    throw new Error('Không thể cập nhật hóa đơn');
-  }
+  const payload: any = { updated_at: new Date().toISOString() };
+  if (data.customerName !== undefined) payload.customer_name = data.customerName;
+  if (data.customerPhone !== undefined) payload.customer_phone = data.customerPhone;
+  if (data.studentId !== undefined) payload.student_id = data.studentId;
+  if (data.studentName !== undefined) payload.student_name = data.studentName;
+  if (data.items !== undefined) payload.items = data.items;
+  if (data.subtotal !== undefined) payload.subtotal = data.subtotal;
+  if (data.discount !== undefined) payload.discount = data.discount;
+  if (data.total !== undefined) payload.total = data.total;
+  if (data.status !== undefined) payload.status = data.status;
+  if (data.paymentMethod !== undefined) payload.payment_method = data.paymentMethod;
+  if (data.note !== undefined) payload.note = data.note;
+  
+  const { error } = await supabase.from('invoices').update(payload).eq('id', id);
+  if (error) throw error;
 };
 
 export const markAsPaid = async (id: string): Promise<void> => {
-  await updateInvoice(id, { 
-    status: 'Đã thanh toán', 
-    paidAt: new Date().toISOString() 
-  });
+  const { error } = await supabase.from('invoices').update({
+    status: 'Đã thanh toán',
+    paid_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if (error) throw error;
 };
 
 export const cancelInvoice = async (id: string): Promise<void> => {
-  await updateInvoice(id, { status: 'Đã hủy' });
+  const { error } = await supabase.from('invoices').update({
+    status: 'Đã hủy',
+    updated_at: new Date().toISOString()
+  }).eq('id', id);
+  if (error) throw error;
 };
 
 export const deleteInvoice = async (id: string): Promise<void> => {
-  try {
-    const docRef = doc(db, INVOICES_COLLECTION, id);
-    await deleteDoc(docRef);
-  } catch (error) {
-    console.error('Error deleting invoice:', error);
-    throw new Error('Không thể xóa hóa đơn');
-  }
+  const { error } = await supabase.from('invoices').delete().eq('id', id);
+  if (error) throw error;
+};
+
+export const createBulkInvoices = async (invoices: Omit<Invoice, 'id' | 'invoiceCode'>[]): Promise<void> => {
+  if (invoices.length === 0) return;
+
+  const timestamp = Date.now().toString().slice(-6);
+  
+  const payloads = invoices.map((data, index) => ({
+    invoice_code: `INV${timestamp}${index.toString().padStart(3, '0')}`,
+    customer_name: data.customerName,
+    customer_phone: data.customerPhone,
+    student_id: data.studentId,
+    student_name: data.studentName,
+    items: data.items,
+    subtotal: data.subtotal,
+    discount: data.discount,
+    total: data.total,
+    status: data.status,
+    payment_method: data.paymentMethod,
+    note: data.note,
+    created_by: data.createdBy,
+  }));
+
+  const { error } = await supabase.from('invoices').insert(payloads);
+  if (error) throw error;
 };

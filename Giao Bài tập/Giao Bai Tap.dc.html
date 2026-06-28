@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{font-family:'Be Vietnam Pro',system-ui,-apple-system,sans-serif;background:#F4F5F8;color:#1A1D29;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    button{font-family:inherit}
+    @keyframes gbt-up{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+    @keyframes gbt-in{from{opacity:0}to{opacity:1}}
+    @keyframes gbt-toast{from{opacity:0;transform:translate(-50%,16px)}to{opacity:1;transform:translate(-50%,0)}}
+    ::-webkit-scrollbar{height:10px;width:10px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:#D4D8E2;border-radius:8px;border:2px solid transparent;background-clip:content-box}
+    ::-webkit-scrollbar-thumb:hover{background:#BCC2D0;background-clip:content-box}
+  </style>
+</helmet>
+<div style="min-height:100vh;background:#F4F5F8;padding:28px 24px 120px;">
+  <div style="max-width:1200px;margin:0 auto;">
+
+    <!-- ============ HEADER ============ -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:22px;">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div style="width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,#5B57E0,#7B6BF0);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px -4px rgba(91,87,224,.5);">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path><path d="m9.5 9.5 2 2 4-4"></path></svg>
+        </div>
+        <div>
+          <h1 style="margin:0;font-size:23px;font-weight:800;letter-spacing:-.01em;">Giao Bài tập</h1>
+          <p style="margin:3px 0 0;font-size:13.5px;color:#6B7180;font-weight:500;">Chọn theo phân cấp <strong style="color:#1A1D29;font-weight:700;">Khối → Lớp → Lớp học → Dạng bài</strong> để giao bài cho học sinh</p>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:18px;background:#fff;border:1px solid #E9EBF1;border-radius:13px;padding:10px 16px;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+        <sc-for list="{{ legend }}" as="lg" hint-placeholder-count="4">
+          <div style="display:flex;align-items:center;gap:7px;">
+            <span style="width:10px;height:10px;border-radius:50%;background:{{ lg.color }};"></span>
+            <span style="font-size:12.5px;font-weight:600;color:#3A3F4D;">{{ lg.label }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- ============ BREADCRUMB ============ -->
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;background:#fff;border:1px solid #E9EBF1;border-radius:12px;padding:9px 12px;margin:14px 0 18px;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+      <span style="font-size:11.5px;font-weight:700;color:#A2A7B4;letter-spacing:.04em;text-transform:uppercase;margin-right:6px;">Đang chọn</span>
+      <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="2">
+        <sc-if value="{{ c.showSep }}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C7CBD6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="m9 18 6-6-6-6"></path></svg>
+        </sc-if>
+        <button onClick="{{ c.onClick }}" style="display:inline-flex;align-items:center;gap:7px;border:none;background:transparent;cursor:pointer;padding:5px 9px;border-radius:8px;font-size:13.5px;font-weight:600;color:{{ c.color }};" style-hover="background:#F2F3F7;">
+          <span style="width:8px;height:8px;border-radius:50%;background:{{ c.dot }};"></span>
+          {{ c.label }}
+        </button>
+      </sc-for>
+    </div>
+
+    <!-- ============ PATTERN: COLUMNS ============ -->
+    <sc-if value="{{ isColumns }}">
+      <div style="display:flex;gap:14px;overflow-x:auto;padding:2px 2px 10px;">
+
+        <!-- Col Khối -->
+        <div style="flex:1 1 0;min-width:178px;display:flex;flex-direction:column;background:#fff;border:1px solid #E9EBF1;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+          <div style="display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid #F0F1F5;background:#FBFBFD;">
+            <span style="width:26px;height:26px;border-radius:8px;background:#EEEDFD;display:flex;align-items:center;justify-content:center;">{{ icoKhoi }}</span>
+            <span style="font-size:13px;font-weight:700;color:#1A1D29;">Khối</span>
+            <span style="margin-left:auto;font-size:12px;font-weight:600;color:#A2A7B4;">{{ khoiCount }}</span>
+          </div>
+          <div style="padding:8px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:460px;">
+            <sc-for list="{{ khoiList }}" as="it" hint-placeholder-count="3">
+              <div onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="filter:brightness(.97);">
+                <span style="flex:none;">{{ it.icon }}</span>
+                <span style="flex:1;min-width:0;"><span style="display:block;font-size:14px;font-weight:600;line-height:1.25;">{{ it.name }}</span><span style="display:block;font-size:11.5px;color:#9398A5;font-weight:500;margin-top:1px;">{{ it.sub }}</span></span>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C2C7D2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="m9 18 6-6-6-6"></path></svg>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- Col Lớp -->
+        <div style="flex:1 1 0;min-width:178px;display:flex;flex-direction:column;background:#fff;border:1px solid #E9EBF1;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+          <div style="display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid #F0F1F5;background:#FBFBFD;">
+            <span style="width:26px;height:26px;border-radius:8px;background:#E7F0FE;display:flex;align-items:center;justify-content:center;">{{ icoLop }}</span>
+            <span style="font-size:13px;font-weight:700;color:#1A1D29;">Lớp</span>
+            <span style="margin-left:auto;font-size:12px;font-weight:600;color:#A2A7B4;">{{ lopCount }}</span>
+          </div>
+          <div style="padding:8px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:460px;">
+            <sc-if value="{{ showLop }}">
+              <sc-for list="{{ lopList }}" as="it" hint-placeholder-count="5">
+                <div onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="filter:brightness(.97);">
+                  <span style="flex:none;">{{ it.icon }}</span>
+                  <span style="flex:1;min-width:0;"><span style="display:block;font-size:14px;font-weight:600;line-height:1.25;">{{ it.name }}</span><span style="display:block;font-size:11.5px;color:#9398A5;font-weight:500;margin-top:1px;">{{ it.sub }}</span></span>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C2C7D2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><path d="m9 18 6-6-6-6"></path></svg>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ noKhoi }}">
+              <div style="padding:30px 16px;text-align:center;color:#B4B9C5;font-size:13px;font-weight:500;">Chọn <strong style="color:#9398A5;">Khối</strong> để xem danh sách lớp</div>
+            </sc-if>
+          </div>
+        </div>
+
+        <!-- Col Lớp học -->
+        <div style="flex:1 1 0;min-width:178px;display:flex;flex-direction:column;background:#fff;border:1px solid #E9EBF1;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+          <div style="display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid #F0F1F5;background:#FBFBFD;">
+            <span style="width:26px;height:26px;border-radius:8px;background:#E1F6EF;display:flex;align-items:center;justify-content:center;">{{ icoLopHoc }}</span>
+            <span style="font-size:13px;font-weight:700;color:#1A1D29;">Lớp học</span>
+            <span style="margin-left:auto;font-size:12px;font-weight:600;color:#A2A7B4;">{{ lopHocCount }}</span>
+          </div>
+          <div style="padding:8px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:460px;">
+            <sc-if value="{{ showLopHoc }}">
+              <sc-for list="{{ lopHocList }}" as="it" hint-placeholder-count="3">
+                <div onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="filter:brightness(.97);">
+                  <span style="flex:none;">{{ it.icon }}</span>
+                  <span style="flex:1;min-width:0;"><span style="display:block;font-size:14px;font-weight:600;line-height:1.25;">{{ it.name }}</span><span style="display:block;font-size:11.5px;color:#9398A5;font-weight:500;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ it.sub }}</span></span>
+                  <span style="flex:none;font-size:11px;font-weight:700;color:#0FA37F;background:#E1F6EF;padding:3px 7px;border-radius:7px;">{{ it.meta }}</span>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ noLop }}">
+              <div style="padding:30px 16px;text-align:center;color:#B4B9C5;font-size:13px;font-weight:500;">Chọn <strong style="color:#9398A5;">Lớp</strong> để xem các lớp học</div>
+            </sc-if>
+          </div>
+        </div>
+
+        <!-- Col Dạng bài -->
+        <div style="flex:1.25 1 0;min-width:206px;display:flex;flex-direction:column;background:#fff;border:1px solid #E9EBF1;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(20,23,40,.04);">
+          <div style="display:flex;align-items:center;gap:9px;padding:13px 15px;border-bottom:1px solid #F0F1F5;background:#FBFBFD;">
+            <span style="width:26px;height:26px;border-radius:8px;background:#FCF1DD;display:flex;align-items:center;justify-content:center;">{{ icoDang }}</span>
+            <span style="font-size:13px;font-weight:700;color:#1A1D29;">Dạng bài</span>
+            <span style="margin-left:auto;font-size:12px;font-weight:600;color:#A2A7B4;">{{ dangCount }}</span>
+          </div>
+          <div style="padding:8px;display:flex;flex-direction:column;gap:5px;overflow-y:auto;max-height:460px;">
+            <sc-if value="{{ showDang }}">
+              <sc-for list="{{ dangList }}" as="it" hint-placeholder-count="4">
+                <div onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="filter:brightness(.97);">
+                  <span style="flex:none;width:18px;height:18px;border-radius:50%;border:2px solid {{ it.radioBorder }};background:{{ it.radioFill }};display:flex;align-items:center;justify-content:center;">{{ it.check }}</span>
+                  <span style="flex:1;min-width:0;"><span style="display:block;font-size:14px;font-weight:600;line-height:1.3;">{{ it.name }}</span><span style="display:block;font-size:11.5px;color:#9398A5;font-weight:500;margin-top:2px;">{{ it.sub }}</span></span>
+                  <span style="flex:none;font-size:11px;font-weight:700;color:#E8920C;background:#FCF1DD;padding:3px 7px;border-radius:7px;">{{ it.meta }}</span>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ noLopHoc }}">
+              <div style="padding:30px 16px;text-align:center;color:#B4B9C5;font-size:13px;font-weight:500;">Chọn <strong style="color:#9398A5;">Lớp học</strong> để xem dạng bài</div>
+            </sc-if>
+          </div>
+        </div>
+
+      </div>
+    </sc-if>
+
+  </div>
+
+  <!-- ============ ASSIGN BAR ============ -->
+  <sc-if value="{{ hasDang }}">
+    <div style="position:fixed;left:0;right:0;bottom:0;z-index:40;background:#fff;border-top:1px solid #E6E8EE;box-shadow:0 -8px 30px -12px rgba(20,23,40,.18);animation:gbt-up .28s cubic-bezier(.2,.8,.2,1);">
+      <div style="max-width:1200px;margin:0 auto;padding:14px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:13px;flex:1 1 320px;min-width:280px;">
+          <span style="width:44px;height:44px;border-radius:12px;background:#FCF1DD;display:flex;align-items:center;justify-content:center;flex:none;">{{ icoDangBig }}</span>
+          <div style="min-width:0;">
+            <div style="font-size:11px;font-weight:700;color:#A2A7B4;letter-spacing:.03em;text-transform:uppercase;">Giao dạng bài</div>
+            <div style="font-size:16px;font-weight:700;color:#1A1D29;line-height:1.25;">{{ dangName }}</div>
+            <div style="font-size:12.5px;font-weight:500;color:#8A8F9C;margin-top:1px;">{{ assignTarget }}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <select defaultValue="10" style="padding:10px 30px 10px 12px;border-radius:10px;border:1.5px solid #E3E6EE;background:#fff;font-family:inherit;font-size:13.5px;font-weight:600;color:#1A1D29;cursor:pointer;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 fill=%22none%22 stroke=%22%238A8F9C%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><path d=%22m6 9 6 6 6-6%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;">
+            <option value="5">5 bài</option>
+            <option value="10">10 bài</option>
+            <option value="15">15 bài</option>
+            <option value="all">Tất cả bài</option>
+          </select>
+          <input type="date" defaultValue="2026-06-18" style="padding:10px 12px;border-radius:10px;border:1.5px solid #E3E6EE;background:#fff;font-family:inherit;font-size:13.5px;font-weight:600;color:#1A1D29;cursor:pointer;">
+          <button onClick="{{ doAssign }}" style="display:inline-flex;align-items:center;gap:8px;padding:11px 22px;border-radius:11px;border:none;background:linear-gradient(135deg,#5B57E0,#7B6BF0);color:#fff;font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 6px 16px -5px rgba(91,87,224,.6);" style-hover="filter:brightness(1.06);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>
+            Giao bài tập
+          </button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ============ TOAST ============ -->
+  <sc-if value="{{ toast }}">
+    <div style="position:fixed;left:50%;bottom:96px;z-index:60;transform:translateX(-50%);animation:gbt-toast .3s cubic-bezier(.2,.8,.2,1);">
+      <div style="display:flex;align-items:center;gap:11px;background:#15324A;color:#fff;padding:13px 20px;border-radius:13px;box-shadow:0 12px 32px -8px rgba(0,0,0,.4);font-size:14px;font-weight:600;">
+        <span style="width:24px;height:24px;border-radius:50%;background:#0FA37F;display:flex;align-items:center;justify-content:center;flex:none;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg></span>
+        {{ toast }}
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    pattern: 'columns',
+    khoiId: 'th', lopId: 'th-1', lopHocId: 'th-1-A', dangId: null,
+    expanded: { 'th': true, 'th-1': true, 'th-1-A': true },
+    toast: null,
+  };
+
+  LV = {
+    khoi:   { c: '#5B57E0', bg: '#EEEDFD', label: 'Khối' },
+    lop:    { c: '#2E7BF0', bg: '#E7F0FE', label: 'Lớp' },
+    lopHoc: { c: '#0FA37F', bg: '#E1F6EF', label: 'Lớp học' },
+    dang:   { c: '#E8920C', bg: '#FCF1DD', label: 'Dạng bài' },
+  };
+  KHOI = [
+    { id: 'th',   name: 'Khối Tiểu học', sub: 'Lớp 1 – 5' },
+    { id: 'thcs', name: 'Khối THCS',     sub: 'Lớp 6 – 9' },
+    { id: 'thpt', name: 'Khối THPT',     sub: 'Lớp 10 – 12' },
+  ];
+  GRADES = { th: [1,2,3,4,5], thcs: [6,7,8,9], thpt: [10,11,12] };
+  SECTIONS = ['A','B','C'];
+  TEACHERS = ['Cô Nguyễn Thu Hà','Thầy Trần Văn Bình','Cô Lê Minh Châu','Thầy Phạm Quốc Anh'];
+  SUBJECTS = {
+    th:   ['Phép cộng trong phạm vi 10','Phép trừ trong phạm vi 10','So sánh số','Nhận biết hình học','Bài toán có lời văn','Đếm và viết số'],
+    thcs: ['Số nguyên & phân số','Phương trình bậc nhất','Hình học phẳng','Tỉ lệ thức','Biểu thức đại số','Thống kê & xác suất'],
+    thpt: ['Hàm số & đồ thị','Đạo hàm & ứng dụng','Nguyên hàm – Tích phân','Hình học không gian','Tổ hợp – Xác suất','Lượng giác'],
+  };
+
+  buildLops(khoiId) {
+    return (this.GRADES[khoiId] || []).map(function (n) { return { n: n, id: khoiId + '-' + n }; });
+  }
+  buildLopHocs(lopId) {
+    const n = lopId.split('-')[1];
+    const self = this;
+    return this.SECTIONS.map(function (s, i) {
+      return {
+        id: lopId + '-' + s,
+        name: 'Lớp ' + n + s,
+        teacher: self.TEACHERS[(parseInt(n, 10) + i) % self.TEACHERS.length],
+        students: 32 + ((parseInt(n, 10) * 3 + i * 5) % 9),
+      };
+    });
+  }
+  buildDangs(lopId) {
+    const band = lopId.split('-')[0];
+    const arr = this.SUBJECTS[band] || this.SUBJECTS.th;
+    const counts = [12, 8, 15, 6, 10, 9];
+    const lv = ['Cơ bản', 'Vận dụng', 'Nâng cao'];
+    return arr.map(function (name, i) {
+      return { id: lopId + '-d' + i, name: name, count: counts[i % counts.length], level: lv[i % 3] };
+    });
+  }
+
+  icon(level, color, size) {
+    const e = React.createElement; size = size || 18;
+    const p = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round' };
+    if (level === 'khoi') return e('svg', p, e('path', { key: 1, d: 'M12 2.5 2.5 7.2l9.5 4.7 9.5-4.7L12 2.5Z' }), e('path', { key: 2, d: 'M2.5 12l9.5 4.7L21.5 12' }), e('path', { key: 3, d: 'M2.5 16.5 12 21.2l9.5-4.7' }));
+    if (level === 'lop') return e('svg', p, e('rect', { key: 1, x: 3, y: 3, width: 7.5, height: 7.5, rx: 1.8 }), e('rect', { key: 2, x: 13.5, y: 3, width: 7.5, height: 7.5, rx: 1.8 }), e('rect', { key: 3, x: 3, y: 13.5, width: 7.5, height: 7.5, rx: 1.8 }), e('rect', { key: 4, x: 13.5, y: 13.5, width: 7.5, height: 7.5, rx: 1.8 }));
+    if (level === 'lopHoc') return e('svg', p, e('path', { key: 1, d: 'M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20' }), e('circle', { key: 2, cx: 10, cy: 8, r: 3.3 }), e('path', { key: 3, d: 'M20 20v-1.5a3.5 3.5 0 0 0-2.6-3.4' }), e('path', { key: 4, d: 'M15.5 4.7a3.3 3.3 0 0 1 0 6.4' }));
+    return e('svg', p, e('path', { key: 1, d: 'M8 5h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7' }), e('path', { key: 2, d: 'M5 7a2 2 0 0 1 2-2' }), e('path', { key: 3, d: 'm8.5 12 2 2 4-4' }));
+  }
+
+  pick(level, id) {
+    this.setState(function (s) {
+      const ex = Object.assign({}, s.expanded); ex[id] = true;
+      const ns = Object.assign({}, s, { expanded: ex });
+      if (level === 'khoi') { ns.khoiId = id; ns.lopId = null; ns.lopHocId = null; ns.dangId = null; }
+      else if (level === 'lop') { ns.lopId = id; ns.lopHocId = null; ns.dangId = null; }
+      else if (level === 'lopHoc') { ns.lopHocId = id; ns.dangId = null; }
+      else if (level === 'dang') { ns.dangId = id; }
+      return ns;
+    });
+  }
+  crumb(level) {
+    this.setState(function (s) {
+      const ns = Object.assign({}, s);
+      if (level === 'home') { ns.khoiId = null; ns.lopId = null; ns.lopHocId = null; ns.dangId = null; return ns; }
+      const o = ['khoi', 'lop', 'lopHoc', 'dang']; const i = o.indexOf(level);
+      if (i <= 0) ns.khoiId = null;
+      if (i <= 1) ns.lopId = null;
+      if (i <= 2) ns.lopHocId = null;
+      ns.dangId = null;
+      return ns;
+    });
+  }
+  toggle(id) {
+    this.setState(function (s) { const ex = Object.assign({}, s.expanded); ex[id] = !ex[id]; return { expanded: ex }; });
+  }
+  setPattern(p) { this.setState({ pattern: p }); }
+  doAssign() {
+    const s = this.state; if (!s.dangId || !s.lopId) return;
+    const d = this.buildDangs(s.lopId).find(function (x) { return x.id === s.dangId; });
+    const lh = this.buildLopHocs(s.lopId).find(function (x) { return x.id === s.lopHocId; });
+    const msg = 'Đã giao "' + (d ? d.name : '') + '" cho ' + (lh ? lh.name : '');
+    this.setState({ toast: msg });
+    clearTimeout(this._t); const self = this;
+    this._t = setTimeout(function () { self.setState({ toast: null }); }, 3000);
+  }
+
+  itemStyle(level, sel) {
+    const m = this.LV[level];
+    return 'display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:11px;cursor:pointer;transition:filter .12s ease;border:1.5px solid ' + (sel ? m.c : '#EEEFF3') + ';background:' + (sel ? m.bg : '#fff') + ';';
+  }
+  treeRowStyle(level, sel) {
+    const m = this.LV[level];
+    return 'display:flex;align-items:center;gap:7px;padding:7px 9px;border-radius:9px;cursor:pointer;font-size:14px;transition:background .12s ease;border:1.5px solid ' + (sel ? m.c : 'transparent') + ';background:' + (sel ? m.bg : 'transparent') + ';color:' + (sel ? m.c : '#2A2E3D') + ';font-weight:' + (sel ? '700' : '500') + ';';
+  }
+  drillCardStyle(level, sel) {
+    const m = this.LV[level];
+    return 'display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:16px;cursor:pointer;background:#fff;text-align:left;font-family:inherit;align-items:flex-start;transition:transform .14s ease, box-shadow .14s ease;border:1.5px solid ' + (sel ? m.c : '#E9EBF1') + ';box-shadow:' + (sel ? '0 10px 26px -10px ' + m.c + '66' : '0 1px 3px rgba(20,23,40,.05)') + ';';
+  }
+  selStyle(disabled) {
+    return 'padding:11px 13px;border-radius:11px;border:1.5px solid #E3E6EE;font-family:inherit;font-size:14px;font-weight:600;color:' + (disabled ? '#B4B9C5' : '#1A1D29') + ';cursor:' + (disabled ? 'not-allowed' : 'pointer') + ';appearance:none;background-color:' + (disabled ? '#F6F7F9' : '#fff') + ";background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 fill=%22none%22 stroke=%22%238A8F9C%22 stroke-width=%222%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22><path d=%22m6 9 6 6 6-6%22/></svg>');background-repeat:no-repeat;background-position:right 12px center;";
+  }
+
+  renderVals() {
+    const s = this.state;
+    const self = this;
+    const e = React.createElement;
+    const LV = this.LV;
+
+    // ---- names ----
+    const khoiObj = this.KHOI.find(function (k) { return k.id === s.khoiId; });
+    const khoiName = khoiObj ? khoiObj.name : '';
+    const lopNum = s.lopId ? s.lopId.split('-')[1] : '';
+    const lopName = s.lopId ? ('Lớp ' + lopNum) : '';
+    const lhObj = (s.lopId && s.lopHocId) ? this.buildLopHocs(s.lopId).find(function (x) { return x.id === s.lopHocId; }) : null;
+    const lopHocName = lhObj ? lhObj.name : '';
+    const dObj = (s.lopId && s.dangId) ? this.buildDangs(s.lopId).find(function (x) { return x.id === s.dangId; }) : null;
+    const dangName = dObj ? dObj.name : '';
+
+    // ---- column lists ----
+    const khoiList = this.KHOI.map(function (k) {
+      const sel = s.khoiId === k.id;
+      return { id: k.id, name: k.name, sub: k.sub, icon: self.icon('khoi', LV.khoi.c, 18), style: self.itemStyle('khoi', sel), onClick: function () { self.pick('khoi', k.id); } };
+    });
+    const lopList = s.khoiId ? this.buildLops(s.khoiId).map(function (l) {
+      const sel = s.lopId === l.id;
+      return { id: l.id, name: 'Lớp ' + l.n, sub: self.SECTIONS.length + ' lớp học', icon: self.icon('lop', LV.lop.c, 18), style: self.itemStyle('lop', sel), onClick: function () { self.pick('lop', l.id); } };
+    }) : [];
+    const lopHocList = s.lopId ? this.buildLopHocs(s.lopId).map(function (lh) {
+      const sel = s.lopHocId === lh.id;
+      return { id: lh.id, name: lh.name, sub: lh.teacher, meta: lh.students + ' HS', icon: self.icon('lopHoc', LV.lopHoc.c, 18), style: self.itemStyle('lopHoc', sel), onClick: function () { self.pick('lopHoc', lh.id); } };
+    }) : [];
+    const dangList = s.lopId ? this.buildDangs(s.lopId).map(function (d) {
+      const sel = s.dangId === d.id;
+      return {
+        id: d.id, name: d.name, sub: d.level, meta: d.count + ' bài',
+        radioBorder: sel ? LV.dang.c : '#D2D6E0', radioFill: sel ? LV.dang.c : '#fff',
+        check: sel ? e('svg', { width: 10, height: 10, viewBox: '0 0 24 24', fill: 'none', stroke: '#fff', strokeWidth: 4, strokeLinecap: 'round', strokeLinejoin: 'round' }, e('path', { d: 'M20 6 9 17l-5-5' })) : '',
+        style: self.itemStyle('dang', sel), onClick: function () { self.pick('dang', d.id); }
+      };
+    }) : [];
+
+    // ---- drill ----
+    var drillLevel, drillRaw, drillTitle, drillSub;
+    if (!s.khoiId) { drillLevel = 'khoi'; drillRaw = this.KHOI.map(function (k) { return { id: k.id, name: k.name, sub: k.sub, meta: self.buildLops(k.id).length + ' lớp' }; }); }
+    else if (!s.lopId) { drillLevel = 'lop'; drillRaw = this.buildLops(s.khoiId).map(function (l) { return { id: l.id, name: 'Lớp ' + l.n, sub: 'Khối ' + khoiName.replace('Khối ', ''), meta: self.SECTIONS.length + ' lớp học' }; }); }
+    else if (!s.lopHocId) { drillLevel = 'lopHoc'; drillRaw = this.buildLopHocs(s.lopId).map(function (lh) { return { id: lh.id, name: lh.name, sub: lh.teacher, meta: lh.students + ' HS' }; }); }
+    else { drillLevel = 'dang'; drillRaw = this.buildDangs(s.lopId).map(function (d) { return { id: d.id, name: d.name, sub: d.level, meta: d.count + ' bài' }; }); }
+    const dm = LV[drillLevel];
+    drillTitle = 'Chọn ' + dm.label;
+    const drillTrail = [khoiName, lopName, lopHocName].filter(Boolean).join('  ›  ');
+    drillSub = drillTrail ? ('trong ' + drillTrail) : 'để bắt đầu giao bài';
+    const drillItems = drillRaw.map(function (it) {
+      const sel = drillLevel === 'dang' && s.dangId === it.id;
+      return { id: it.id, name: it.name, sub: it.sub, meta: it.meta, icon: self.icon(drillLevel, dm.c, 20), iconBg: dm.bg, tagColor: dm.c, tagBg: dm.bg, style: self.drillCardStyle(drillLevel, sel), onClick: function () { self.pick(drillLevel, it.id); } };
+    });
+
+    // ---- tree ----
+    const tree = this.KHOI.map(function (k) {
+      const kSel = s.khoiId === k.id;
+      return {
+        id: k.id, name: k.name, meta: self.buildLops(k.id).length + ' lớp', icon: self.icon('khoi', LV.khoi.c, 16),
+        open: !!s.expanded[k.id], caret: s.expanded[k.id] ? 'rotate(90deg)' : 'rotate(0deg)',
+        style: self.treeRowStyle('khoi', kSel),
+        onClick: function () { self.pick('khoi', k.id); }, toggle: function (ev) { ev.stopPropagation(); self.toggle(k.id); },
+        children: self.buildLops(k.id).map(function (l) {
+          const lSel = s.lopId === l.id;
+          return {
+            id: l.id, name: 'Lớp ' + l.n, meta: self.SECTIONS.length + ' lớp học', icon: self.icon('lop', LV.lop.c, 16),
+            open: !!s.expanded[l.id], caret: s.expanded[l.id] ? 'rotate(90deg)' : 'rotate(0deg)',
+            style: self.treeRowStyle('lop', lSel),
+            onClick: function () { self.pick('lop', l.id); }, toggle: function (ev) { ev.stopPropagation(); self.toggle(l.id); },
+            children: self.buildLopHocs(l.id).map(function (lh) {
+              const lhSel = s.lopHocId === lh.id;
+              return {
+                id: lh.id, name: lh.name, meta: lh.students + ' HS', icon: self.icon('lopHoc', LV.lopHoc.c, 16),
+                open: !!s.expanded[lh.id], caret: s.expanded[lh.id] ? 'rotate(90deg)' : 'rotate(0deg)',
+                style: self.treeRowStyle('lopHoc', lhSel),
+                onClick: function () { self.pick('lopHoc', lh.id); }, toggle: function (ev) { ev.stopPropagation(); self.toggle(lh.id); },
+                children: self.buildDangs(l.id).map(function (d) {
+                  const dSel = s.dangId === d.id;
+                  return { id: d.id, name: d.name, meta: d.count + ' bài', icon: self.icon('dang', LV.dang.c, 15), dot: LV.dang.c, style: self.treeRowStyle('dang', dSel), onClick: function () { self.pick('dang', d.id); } };
+                })
+              };
+            })
+          };
+        })
+      };
+    });
+
+    // ---- path rows (tree detail) ----
+    const pathRows = [
+      { label: 'Khối', value: khoiName || 'Chưa chọn', valColor: khoiName ? LV.khoi.c : '#B4B9C5', bg: LV.khoi.bg, icon: this.icon('khoi', LV.khoi.c, 16) },
+      { label: 'Lớp', value: lopName || 'Chưa chọn', valColor: lopName ? LV.lop.c : '#B4B9C5', bg: LV.lop.bg, icon: this.icon('lop', LV.lop.c, 16) },
+      { label: 'Lớp học', value: lopHocName || 'Chưa chọn', valColor: lopHocName ? LV.lopHoc.c : '#B4B9C5', bg: LV.lopHoc.bg, icon: this.icon('lopHoc', LV.lopHoc.c, 16) },
+      { label: 'Dạng bài', value: dangName || 'Chưa chọn', valColor: dangName ? LV.dang.c : '#B4B9C5', bg: LV.dang.bg, icon: this.icon('dang', LV.dang.c, 16) },
+    ];
+
+    // ---- breadcrumb ----
+    const crumbs = [{ label: 'Tất cả khối', color: '#7A8090', dot: '#C7CBD6', chipBg: '#F2F3F6', showSep: false, onClick: function () { self.crumb('home'); } }];
+    if (s.khoiId) crumbs.push({ label: khoiName, color: LV.khoi.c, dot: LV.khoi.c, chipBg: LV.khoi.bg, showSep: true, onClick: function () { self.crumb('khoi'); } });
+    if (s.lopId) crumbs.push({ label: lopName, color: LV.lop.c, dot: LV.lop.c, chipBg: LV.lop.bg, showSep: true, onClick: function () { self.crumb('lop'); } });
+    if (s.lopHocId) crumbs.push({ label: lopHocName, color: LV.lopHoc.c, dot: LV.lopHoc.c, chipBg: LV.lopHoc.bg, showSep: true, onClick: function () { self.crumb('lopHoc'); } });
+    if (s.dangId) crumbs.push({ label: dangName, color: LV.dang.c, dot: LV.dang.c, chipBg: LV.dang.bg, showSep: true, onClick: function () { self.crumb('dang'); } });
+
+    // ---- dropdown options ----
+    const optKhoi = this.KHOI.map(function (k) { return { v: k.id, l: k.name }; });
+    const optLop = s.khoiId ? this.buildLops(s.khoiId).map(function (l) { return { v: l.id, l: 'Lớp ' + l.n }; }) : [];
+    const optLopHoc = s.lopId ? this.buildLopHocs(s.lopId).map(function (lh) { return { v: lh.id, l: lh.name + ' · ' + lh.teacher }; }) : [];
+    const optDang = s.lopId ? this.buildDangs(s.lopId).map(function (d) { return { v: d.id, l: d.name }; }) : [];
+    const onSel = function (level) { return function (ev) { const v = ev.target.value; if (v) self.pick(level, v); else self.crumb(level); }; };
+
+    // ---- tabs ----
+    const defs = [
+      { id: 'columns', label: 'Cột song song', desc: 'Chọn cột này hiện cột kế tiếp — xem toàn bộ phân cấp cùng lúc.' },
+      { id: 'drill', label: 'Drill-down', desc: 'Đi sâu từng bước, có breadcrumb quay lại — hợp cho điện thoại.' },
+      { id: 'tree', label: 'Cây thư mục', desc: 'Mở rộng / thu gọn cây phân cấp, luôn thấy ngữ cảnh.' },
+      { id: 'dropdown', label: 'Lọc nối tiếp', desc: 'Bốn bộ lọc liên hoàn, gọn cho thanh công cụ.' },
+    ];
+    const tabs = defs.map(function (d) {
+      const active = s.pattern === d.id;
+      return { id: d.id, label: d.label, onClick: function () { self.setPattern(d.id); }, style: 'padding:9px 16px;border-radius:9px;border:none;cursor:pointer;font-size:14px;font-weight:600;white-space:nowrap;transition:all .15s;background:' + (active ? '#fff' : 'transparent') + ';color:' + (active ? '#1A1D29' : '#6B7180') + ';box-shadow:' + (active ? '0 1px 4px rgba(20,23,40,.14)' : 'none') + ';' };
+    });
+    const cur = defs.find(function (d) { return d.id === s.pattern; });
+
+    const legend = [
+      { label: 'Khối', color: LV.khoi.c }, { label: 'Lớp', color: LV.lop.c },
+      { label: 'Lớp học', color: LV.lopHoc.c }, { label: 'Dạng bài', color: LV.dang.c },
+    ];
+
+    return {
+      // patterns
+      isColumns: s.pattern === 'columns', isDrill: s.pattern === 'drill', isTree: s.pattern === 'tree', isDropdown: s.pattern === 'dropdown',
+      patternDesc: cur ? cur.desc : '', tabs: tabs, legend: legend,
+      // columns
+      khoiList: khoiList, lopList: lopList, lopHocList: lopHocList, dangList: dangList,
+      showLop: !!s.khoiId, showLopHoc: !!s.lopId, showDang: !!s.lopHocId,
+      noKhoi: !s.khoiId, noLop: !s.lopId, noLopHoc: !s.lopHocId,
+      khoiCount: this.KHOI.length + ' khối', lopCount: lopList.length ? lopList.length + ' lớp' : '', lopHocCount: lopHocList.length ? lopHocList.length + ' lớp' : '', dangCount: dangList.length ? dangList.length + ' dạng' : '',
+      icoKhoi: this.icon('khoi', LV.khoi.c, 15), icoLop: this.icon('lop', LV.lop.c, 15), icoLopHoc: this.icon('lopHoc', LV.lopHoc.c, 15), icoDang: this.icon('dang', LV.dang.c, 15),
+      // drill
+      drillItems: drillItems, drillTitle: drillTitle, drillSub: drillSub,
+      // tree
+      tree: tree, pathRows: pathRows,
+      // breadcrumb
+      crumbs: crumbs,
+      // dropdown
+      optKhoi: optKhoi, optLop: optLop, optLopHoc: optLopHoc, optDang: optDang,
+      khoiIdV: s.khoiId || '', lopIdV: s.lopId || '', lopHocIdV: s.lopHocId || '', dangIdV: s.dangId || '',
+      selKhoi: onSel('khoi'), selLop: onSel('lop'), selLopHoc: onSel('lopHoc'), selDang: onSel('dang'),
+      selLopStyle: this.selStyle(!s.khoiId), selLopHocStyle: this.selStyle(!s.lopId), selDangStyle: this.selStyle(!s.lopHocId),
+      // assign
+      hasDang: !!s.dangId,
+      dangName: dangName,
+      assignTarget: lopHocName ? (lopHocName + ' · ' + khoiName + (lopName ? (' · ' + lopName) : '')) : '',
+      icoDangBig: this.icon('dang', LV.dang.c, 22),
+      doAssign: function () { self.doAssign(); },
+      toast: s.toast,
+    };
+  }
+}
+</script>
+</body>
+</html>

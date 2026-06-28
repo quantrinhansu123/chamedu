@@ -4,8 +4,7 @@ import { ClassStatus, ClassModel, Student, StudentStatus, TrainingHistoryEntry, 
 import { useClasses } from '../src/hooks/useClasses';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
-import { collection, getDocs, doc, updateDoc, arrayUnion, arrayRemove, query, where, addDoc, orderBy, onSnapshot } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
+import { supabase } from '../src/config/supabase';
 import { getScheduleTime, getScheduleDays, formatSchedule } from '../src/utils/scheduleUtils';
 import { ImportExportButtons } from '../components/ImportExportButtons';
 import { CLASS_FIELDS, CLASS_MAPPING, prepareClassExport } from '../src/utils/excelUtils';
@@ -46,6 +45,8 @@ export const ClassManager: React.FC = () => {
   const [selectedClassForAction, setSelectedClassForAction] = useState<ClassModel | null>(null);
   const [selectedClassForStudents, setSelectedClassForStudents] = useState<ClassModel | null>(null);
   const [selectedClassForDetail, setSelectedClassForDetail] = useState<ClassModel | null>(null);
+  const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Teacher change dialog state
   const [showTeacherChangeDialog, setShowTeacherChangeDialog] = useState(false);
@@ -107,12 +108,12 @@ export const ClassManager: React.FC = () => {
   useEffect(() => {
     const fetchCurriculums = async () => {
       try {
-        const curriculumsSnap = await getDocs(collection(db, 'curriculums'));
-        const list = curriculumsSnap.docs.map(doc => doc.data().name as string).filter(Boolean);
+        const { data: curriculumsData } = await supabase.from('curriculums').select('name');
+        const list = (curriculumsData || []).map((doc: any) => doc.name as string).filter(Boolean);
         // Also extract unique curriculums from existing classes
-        const classesSnap = await getDocs(collection(db, 'classes'));
-        const classCurriculums = classesSnap.docs
-          .map(doc => doc.data().curriculum as string)
+        const { data: classesData } = await supabase.from('classes').select('curriculum');
+        const classCurriculums = (classesData || [])
+          .map((doc: any) => doc.curriculum as string)
           .filter(Boolean);
         // Combine and deduplicate
         const allCurriculums = [...new Set([...list, ...classCurriculums])].sort();
@@ -124,17 +125,30 @@ export const ClassManager: React.FC = () => {
     fetchCurriculums();
   }, []);
 
-  // REALTIME: Listen to students collection and calculate counts for each class
+  // Poll students and calculate counts for each class
   useEffect(() => {
     if (classes.length === 0) {
       setClassStudentCounts({});
       return;
     }
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'students'),
-      (snapshot) => {
-        const students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const fetchStudents = async () => {
+      try {
+        const { data } = await supabase
+          .from('students')
+          .select('id, class_id, class_ids, class_name, status, has_debt, registered_sessions, attended_sessions, remaining_sessions, full_name');
+        const students = (data || []).map((s: any) => ({
+          id: s.id,
+          classId: s.class_id,
+          classIds: s.class_ids || [],
+          class: s.class_name || '',
+          status: s.status,
+          hasDebt: s.has_debt,
+          registeredSessions: s.registered_sessions,
+          attendedSessions: s.attended_sessions,
+          remainingSessions: s.remaining_sessions,
+          fullName: s.full_name || '',
+        }));
         
         const PRICE_PER_SESSION = 150000;
         const counts: Record<string, { total: number; trial: number; active: number; debt: number; reserved: number; dropped: number; remainingSessions: number; remainingValue: number }> = {};
@@ -208,25 +222,28 @@ export const ClassManager: React.FC = () => {
         });
 
         setClassStudentCounts(counts);
-      },
-      (err) => {
+      } catch (err) {
         console.error('Error listening to students:', err);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    fetchStudents();
+    const timer = setInterval(fetchStudents, 15000);
+    return () => clearInterval(timer);
   }, [classes]);
 
-  // REALTIME: Listen to classSessions collection for session stats
+  // Poll classSessions collection for session stats
   useEffect(() => {
     if (classes.length === 0) {
       setClassSessionStats({});
       return;
     }
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'classSessions'),
-      (snapshot) => {
+    const fetchSessionStats = async () => {
+      try {
+        const { data } = await supabase
+          .from('class_sessions')
+          .select('class_id, status');
         const stats: Record<string, { completed: number; total: number }> = {};
         
         // Initialize stats for all classes
@@ -235,25 +252,25 @@ export const ClassManager: React.FC = () => {
         });
         
         // Count sessions per class
-        snapshot.docs.forEach(doc => {
-          const data = doc.data();
-          const classId = data.classId;
+        (data || []).forEach((session: any) => {
+          const classId = session.class_id;
           if (classId && stats[classId]) {
             stats[classId].total++;
-            if (data.status === 'Đã học') {
+            if (session.status === 'Đã học') {
               stats[classId].completed++;
             }
           }
         });
         
         setClassSessionStats(stats);
-      },
-      (err) => {
+      } catch (err) {
         console.error('Error listening to sessions:', err);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    fetchSessionStats();
+    const timer = setInterval(fetchSessionStats, 15000);
+    return () => clearInterval(timer);
   }, [classes]);
 
   // Get counts for a specific class
@@ -280,6 +297,9 @@ export const ClassManager: React.FC = () => {
     }
     return result;
   }, [classes, teacherFilter, classFilter, branchFilter]);
+
+  const allVisibleSelected =
+    filteredClasses.length > 0 && selectedClassIds.length === filteredClasses.length;
 
   // Get unique branches for dropdown
   const branches = useMemo(() => {
@@ -567,25 +587,85 @@ export const ClassManager: React.FC = () => {
     }, 200);
   };
 
+  const deleteClassWithForce = async (id: string): Promise<boolean> => {
+    const result = await deleteClass(id);
+    if (result.success) return true;
+
+    const forceDelete = confirm(
+      `${result.message}\n\nBạn có muốn xóa bắt buộc không? (Dữ liệu liên quan sẽ được cập nhật tự động)`
+    );
+    if (!forceDelete) return false;
+
+    const forceResult = await deleteClass(id, true);
+    return forceResult.success;
+  };
+
   const handleDelete = async (id: string) => {
     if (!confirm('Bạn có chắc muốn xóa lớp học này?')) return;
     try {
-      const result = await deleteClass(id);
-      if (!result.success) {
-        // Show validation error with option to force delete
-        const forceDelete = confirm(`${result.message}\n\nBạn có muốn xóa bắt buộc không? (Dữ liệu liên quan sẽ được cập nhật tự động)`);
-        if (forceDelete) {
-          const forceResult = await deleteClass(id, true);
-          if (forceResult.success) {
-            alert(forceResult.message);
-          }
-        }
-      } else {
-        alert(result.message);
+      const ok = await deleteClassWithForce(id);
+      if (ok) {
+        setSelectedClassIds(prev => prev.filter(cid => cid !== id));
+        alert('Đã xóa lớp học!');
       }
     } catch (err) {
       console.error('Error deleting class:', err);
+      alert('Có lỗi xảy ra khi xóa lớp học.');
     }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedClassIds.length === 0) {
+      alert('Vui lòng chọn ít nhất 1 lớp để xóa.');
+      return;
+    }
+
+    const selectedSet = new Set(selectedClassIds);
+    const classesToDelete = filteredClasses.filter(c => selectedSet.has(c.id));
+    const namesPreview = classesToDelete
+      .slice(0, 5)
+      .map(c => c.name)
+      .join(', ');
+    const moreCount = classesToDelete.length > 5 ? ` và ${classesToDelete.length - 5} lớp khác` : '';
+    const confirmMsg = `Bạn có chắc muốn xóa ${classesToDelete.length} lớp đã chọn?\n\n${namesPreview}${moreCount}\n\nThao tác này KHÔNG THỂ hoàn tác!`;
+    if (!confirm(confirmMsg)) return;
+
+    const forceAll = confirm(
+      'Xóa bắt buộc các lớp đã chọn (kể cả lớp còn học viên/dữ liệu liên quan)?\n\nChọn OK = xóa bắt buộc\nChọn Hủy = chỉ xóa lớp không có ràng buộc'
+    );
+
+    setBulkDeleting(true);
+    let deleted = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const cls of classesToDelete) {
+      try {
+        if (forceAll) {
+          const forceResult = await deleteClass(cls.id, true);
+          if (forceResult.success) deleted++;
+          else failed++;
+        } else {
+          const result = await deleteClass(cls.id);
+          if (result.success) {
+            deleted++;
+          } else {
+            skipped++;
+          }
+        }
+      } catch (err) {
+        console.error('Error deleting class:', cls.name, err);
+        failed++;
+      }
+    }
+
+    setBulkDeleting(false);
+    setSelectedClassIds([]);
+    alert(
+      `Đã xóa ${deleted} lớp.` +
+        (skipped > 0 ? ` Bỏ qua ${skipped} lớp (còn ràng buộc — chọn xóa bắt buộc).` : '') +
+        (failed > 0 ? ` Lỗi: ${failed}` : '')
+    );
   };
 
   // Import classes from Excel
@@ -626,16 +706,16 @@ export const ClassManager: React.FC = () => {
   const curriculumColumns = ['STT', 'Lớp học', 'Độ tuổi', 'Tên giáo viên / Lịch học', 'Chương trình đang học', 'Lịch test', 'Trạng thái'];
   const columns = viewMode === 'stats' ? statsColumns : curriculumColumns;
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
-      </div>
-    );
-  }
+  const isInitialLoading = loading && allClasses.length === 0;
 
   return (
     <div className="space-y-4 font-sans text-gray-800">
+      {isInitialLoading ? (
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
+        </div>
+      ) : (
+        <>
       {/* Toast Notification */}
       {toast && (
         <div className={`fixed top-4 right-4 z-[100] px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-pulse ${
@@ -725,6 +805,16 @@ export const ClassManager: React.FC = () => {
             templateFileName="MauNhapLopHoc"
             entityName="lớp học"
           />
+          {canDeleteClass && (
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || selectedClassIds.length === 0}
+              className="flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-md hover:bg-red-700 transition-colors text-sm font-semibold disabled:opacity-50"
+            >
+              <Trash size={18} />
+              {bulkDeleting ? 'Đang xóa...' : `Xóa đã chọn (${selectedClassIds.length})`}
+            </button>
+          )}
           {canCreateClass && (
             <button 
               onClick={() => setShowCreateModal(true)}
@@ -801,6 +891,23 @@ export const ClassManager: React.FC = () => {
           <table className="w-full text-left text-sm">
             <thead className="bg-white border-b border-gray-200 text-xs font-bold text-gray-700 uppercase">
               <tr>
+                {canDeleteClass && (
+                  <th className="px-4 py-4 w-12 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedClassIds(filteredClasses.map(c => c.id));
+                        } else {
+                          setSelectedClassIds([]);
+                        }
+                      }}
+                      aria-label="Chọn tất cả lớp"
+                      className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-4 w-16">STT</th>
                 <th className="px-4 py-4 min-w-[150px]">Lớp học</th>
                 {viewMode === 'stats' ? (
@@ -816,6 +923,7 @@ export const ClassManager: React.FC = () => {
                   <th className="px-4 py-4">Độ tuổi</th>
                 )}
                 <th className="px-4 py-4 min-w-[200px]">Tên giáo viên / Lịch học</th>
+                <th className="px-4 py-4 whitespace-nowrap text-right min-w-[120px]">Học phí</th>
                 {viewMode === 'curriculum' && (
                   <>
                     <th className="px-4 py-4 min-w-[180px]">Chương trình đang học</th>
@@ -829,7 +937,30 @@ export const ClassManager: React.FC = () => {
             <tbody className="divide-y divide-gray-100">
               {filteredClasses.length > 0 ? (
                 filteredClasses.map((cls, index) => (
-                  <tr key={cls.id} className="hover:bg-gray-50">
+                  <tr
+                    key={cls.id}
+                    className={`hover:bg-gray-50 ${selectedClassIds.includes(cls.id) ? 'bg-red-50/50' : ''}`}
+                  >
+                    {canDeleteClass && (
+                      <td className="px-4 py-4 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedClassIds.includes(cls.id)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setSelectedClassIds(prev => {
+                              if (checked) {
+                                if (prev.includes(cls.id)) return prev;
+                                return [...prev, cls.id];
+                              }
+                              return prev.filter(id => id !== cls.id);
+                            });
+                          }}
+                          aria-label={`Chọn lớp ${cls.name}`}
+                          className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                      </td>
+                    )}
                     <td className="px-4 py-4 text-gray-500">{index + 1}</td>
                     
                     {/* Lớp học */}
@@ -840,6 +971,11 @@ export const ClassManager: React.FC = () => {
                       >
                         {cls.name}
                       </span>
+                      {cls.createdDate && (
+                        <p className="text-xs text-gray-500 mt-1">
+                          Tao lop: {new Date(cls.createdDate).toLocaleDateString('vi-VN')}
+                        </p>
+                      )}
                       {viewMode === 'curriculum' && (
                         <div className="flex items-center gap-1 text-xs text-gray-500 mt-1">
                           <Users size={12} />
@@ -911,6 +1047,17 @@ export const ClassManager: React.FC = () => {
                             </div>
                           </div>
                         </div>
+                      )}
+                    </td>
+
+                    {/* Học phí */}
+                    <td className="px-4 py-4 text-right whitespace-nowrap">
+                      {cls.tuitionFee ? (
+                        <div className="font-medium text-gray-900">
+                          {cls.tuitionFee.toLocaleString('vi-VN')} đ
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
                       )}
                     </td>
 
@@ -1004,7 +1151,7 @@ export const ClassManager: React.FC = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={viewMode === 'stats' ? 10 : 9} className="px-6 py-12 text-center text-gray-500">
+                  <td colSpan={viewMode === 'stats' ? (canDeleteClass ? 11 : 10) : (canDeleteClass ? 10 : 9)} className="px-6 py-12 text-center text-gray-500">
                     <BookOpen size={32} className="mx-auto mb-2 opacity-30" />
                     <p>Chưa có lớp học nào</p>
                     {canCreateClass && (
@@ -1026,13 +1173,31 @@ export const ClassManager: React.FC = () => {
         <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between bg-white">
           <span className="text-xs text-gray-500">
             Hiển thị {filteredClasses.length} / {classes.length} lớp học
+            {canDeleteClass && selectedClassIds.length > 0 && (
+              <span className="ml-2 text-red-600 font-medium">
+                · Đã chọn {selectedClassIds.length}
+              </span>
+            )}
           </span>
-          <div className="flex gap-2">
-            <button className="px-3 py-1 bg-white border border-gray-200 rounded text-xs font-medium text-gray-500" disabled>Trước</button>
-            <button className="px-3 py-1 bg-white border border-gray-200 rounded text-xs font-medium text-gray-600 hover:bg-gray-50">Sau</button>
+          <div className="flex items-center gap-3">
+            {canDeleteClass && selectedClassIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedClassIds([])}
+                className="text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                Bỏ chọn tất cả
+              </button>
+            )}
+            <div className="flex gap-2">
+              <button className="px-3 py-1 bg-white border border-gray-200 rounded text-xs font-medium text-gray-500" disabled>Trước</button>
+              <button className="px-3 py-1 bg-white border border-gray-200 rounded text-xs font-medium text-gray-600 hover:bg-gray-50">Sau</button>
+            </div>
           </div>
         </div>
       </div>
+        </>
+      )}
 
       {/* Create Modal */}
       {showCreateModal && (

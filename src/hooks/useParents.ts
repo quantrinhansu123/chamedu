@@ -1,111 +1,58 @@
-/**
- * useParents Hook (Realtime)
- * - Sử dụng onSnapshot để tự động cập nhật khi data thay đổi
- */
+/** Supabase: parents derived from students */
+import { useState, useEffect, useCallback } from 'react';
+import { Parent } from '../../types';
+import {
+  ParentWithChildren,
+  createParent,
+  deleteParent,
+  getParentsWithChildren,
+  updateParent,
+} from '../services/parentService';
 
-import { useState, useEffect } from 'react';
-import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
-import { db } from '../config/firebase';
-import { Parent, Student } from '../../types';
-import * as parentService from '../services/parentService';
-import { ParentWithChildren } from '../services/parentService';
-
-interface UseParentsReturn {
-  parents: ParentWithChildren[];
-  loading: boolean;
-  error: string | null;
-  createParent: (data: Omit<Parent, 'id'>) => Promise<string>;
-  updateParent: (id: string, data: Partial<Parent>) => Promise<void>;
-  deleteParent: (id: string) => Promise<void>;
-  findByPhone: (phone: string) => Promise<Parent | null>;
-  refresh: () => Promise<void>;
-}
-
-export const useParents = (searchTerm?: string): UseParentsReturn => {
+export const useParents = (searchTerm?: string) => {
   const [parents, setParents] = useState<ParentWithChildren[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Realtime listener for parents
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-
-    const q = query(collection(db, 'parents'), orderBy('createdAt', 'desc'));
-    
-    const unsubscribe = onSnapshot(q, 
-      async (snapshot) => {
-        try {
-          let parentsList = snapshot.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data(),
-          } as Parent));
-
-          // Client-side search
-          if (searchTerm) {
-            const term = searchTerm.toLowerCase();
-            parentsList = parentsList.filter(p => 
-              p.name.toLowerCase().includes(term) ||
-              p.phone.includes(term)
-            );
-          }
-
-          // Fetch children for each parent
-          const parentsWithChildren = await Promise.all(
-            parentsList.map(async (parent) => {
-              const children = await parentService.getChildrenByParentId(parent.id);
-              return { ...parent, children };
-            })
-          );
-
-          setParents(parentsWithChildren);
-          setLoading(false);
-        } catch (err) {
-          console.error('Error processing parents:', err);
-          setError('Không thể tải danh sách phụ huynh');
-          setLoading(false);
-        }
-      },
-      (err) => {
-        console.error('Snapshot error:', err);
-        setError('Lỗi kết nối realtime');
-        setLoading(false);
-      }
-    );
-
-    // Cleanup listener on unmount
-    return () => unsubscribe();
+  const refresh = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setParents(await getParentsWithChildren(searchTerm));
+    } catch (err: any) {
+      setError(err.message || 'Khong the tai phu huynh');
+    } finally {
+      setLoading(false);
+    }
   }, [searchTerm]);
 
-  const createParent = async (data: Omit<Parent, 'id'>): Promise<string> => {
-    return parentService.createParent(data);
-  };
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
 
-  const updateParent = async (id: string, data: Partial<Parent>): Promise<void> => {
-    await parentService.updateParent(id, data);
-  };
+  const handleCreateParent = useCallback(async (data: Omit<Parent, 'id'>) => {
+    const id = await createParent(data);
+    await refresh();
+    return id;
+  }, [refresh]);
 
-  const deleteParent = async (id: string): Promise<void> => {
-    await parentService.deleteParent(id);
-  };
+  const handleUpdateParent = useCallback(async (id: string, data: Partial<Parent>) => {
+    await updateParent(id, data);
+    await refresh();
+  }, [refresh]);
 
-  const findByPhone = async (phone: string): Promise<Parent | null> => {
-    return parentService.findParentByPhone(phone);
-  };
-
-  const refresh = async () => {
-    // With realtime listener, manual refresh is not needed
-    // But keep for backward compatibility
-  };
+  const handleDeleteParent = useCallback(async (id: string) => {
+    await deleteParent(id);
+    await refresh();
+  }, [refresh]);
 
   return {
     parents,
     loading,
     error,
-    createParent,
-    updateParent,
-    deleteParent,
-    findByPhone,
     refresh,
+    createParent: handleCreateParent,
+    updateParent: handleUpdateParent,
+    deleteParent: handleDeleteParent,
   };
 };

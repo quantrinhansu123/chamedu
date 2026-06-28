@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * SettlementModal Component
  * Modal for settling student fee debt
@@ -8,8 +9,6 @@ import React, { useState } from 'react';
 import { X, CreditCard, AlertTriangle, DollarSign, FileText, CheckCircle, Eye } from 'lucide-react';
 import { Student, SettlementInvoice, SettlementStatus } from '../../../../types';
 import { downloadSettlementInvoicePDF, previewSettlementInvoice } from '../../../services/settlementInvoicePdfService';
-import { doc, collection, runTransaction } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
 import { formatCurrency } from '../../../utils/currencyUtils';
 import { ModalPortal } from '@/components/modal-portal';
 
@@ -69,9 +68,9 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
     setLoading(true);
     try {
       // Use transaction for atomic operations
-      const createdInvoice = await runTransaction(db, async (transaction) => {
+      const createdInvoice = await runTransaction(null as any /* firebase removed */, async (transaction) => {
         // 1. Get current student state
-        const studentRef = doc(db, 'students', student.id);
+        const studentRef = doc(null as any /* firebase removed */, 'students', student.id);
         const studentSnap = await transaction.get(studentRef);
 
         if (!studentSnap.exists()) {
@@ -110,7 +109,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
         const invoiceCode = `STL-${dateStr}-${random}`;
 
         // Create a new document reference (generates ID without writing)
-        const invoiceRef = doc(collection(db, 'settlementInvoices'));
+        const invoiceRef = doc(collection(null as any /* firebase removed */, 'settlementInvoices'));
         const invoiceId = invoiceRef.id;
 
         // 4. Build full invoice data

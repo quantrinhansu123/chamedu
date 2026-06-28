@@ -1,29 +1,12 @@
-/**
- * Campaign Service
- * Handle marketing campaigns CRUD
- */
+import { supabase } from '../config/supabase';
 
-import {
-  collection,
-  doc,
-  getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  query,
-  where,
-  orderBy,
-} from 'firebase/firestore';
-import { db } from '../config/firebase';
-
-const CAMPAIGNS_COLLECTION = 'campaigns';
-
-export type CampaignStatus = 'Đang mở' | 'Tạm dừng' | 'Kết thúc';
+const CAMPAIGNS_SETTING_ID = 'campaigns';
 
 export interface Campaign {
   id?: string;
   name: string;
   description?: string;
+  campaignDetails?: CampaignDetail[];
   startDate: string;
   endDate: string;
   status: CampaignStatus;
@@ -36,105 +19,126 @@ export interface Campaign {
   updatedAt?: string;
 }
 
-export const createCampaign = async (data: Omit<Campaign, 'id'>): Promise<string> => {
-  try {
-    const campaignData = {
-      ...data,
-      targetCount: data.targetCount || 0,
-      registeredCount: data.registeredCount || 0,
-      conversionRate: 0,
-      status: data.status || 'Đang mở',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const docRef = await addDoc(collection(db, CAMPAIGNS_COLLECTION), campaignData);
-    return docRef.id;
-  } catch (error) {
-    console.error('Error creating campaign:', error);
-    throw new Error('Không thể tạo chiến dịch');
+export interface CampaignDetail {
+  action: string;
+  detail: string;
+}
+
+export type CampaignStatus = 'Đang mở' | 'Tạm dừng' | 'Kết thúc';
+
+const newId = () =>
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const normalizeCampaign = (campaign: Campaign): Campaign => ({
+  ...campaign,
+  id: campaign.id || newId(),
+  name: campaign.name || '',
+  description: campaign.description || '',
+  campaignDetails: Array.isArray(campaign.campaignDetails)
+    ? campaign.campaignDetails.map((item) => ({
+        action: item.action || '',
+        detail: item.detail || '',
+      }))
+    : [],
+  startDate: campaign.startDate || '',
+  endDate: campaign.endDate || '',
+  status: campaign.status || 'Đang mở',
+  targetCount: Number(campaign.targetCount) || 0,
+  registeredCount: Number(campaign.registeredCount) || 0,
+  assignedTo: campaign.assignedTo || [],
+});
+
+const loadCampaigns = async (): Promise<Campaign[]> => {
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('id', CAMPAIGNS_SETTING_ID)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Error loading campaigns:', error);
+    throw new Error(error.message || 'Không thể tải chiến dịch');
+  }
+
+  const value = data?.value as { items?: unknown } | unknown[] | null;
+  const items = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.items)
+      ? value.items
+      : [];
+
+  return (items as Campaign[])
+    .map(normalizeCampaign)
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+};
+
+const saveCampaigns = async (campaigns: Campaign[]): Promise<void> => {
+  const { error } = await supabase.from('app_settings').upsert({
+    id: CAMPAIGNS_SETTING_ID,
+    value: { items: campaigns },
+  });
+
+  if (error) {
+    console.error('Error saving campaigns:', error);
+    throw new Error(error.message || 'Không thể lưu chiến dịch');
   }
 };
 
-export const getCampaigns = async (includeEnded: boolean = false): Promise<Campaign[]> => {
-  try {
-    let q = query(collection(db, CAMPAIGNS_COLLECTION), orderBy('createdAt', 'desc'));
-    
-    if (!includeEnded) {
-      q = query(collection(db, CAMPAIGNS_COLLECTION), where('status', '!=', 'Kết thúc'), orderBy('status'), orderBy('createdAt', 'desc'));
-    }
-    
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => {
-      const data = doc.data();
-      const conversionRate = data.targetCount > 0 
-        ? (data.registeredCount / data.targetCount) * 100 
-        : 0;
-      return {
-        id: doc.id,
-        ...data,
-        conversionRate,
-      } as Campaign;
-    });
-  } catch (error) {
-    console.error('Error getting campaigns:', error);
-    // Fallback without complex query
-    const snapshot = await getDocs(collection(db, CAMPAIGNS_COLLECTION));
-    let campaigns = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        conversionRate: data.targetCount > 0 ? (data.registeredCount / data.targetCount) * 100 : 0,
-      } as Campaign;
-    });
-    
-    if (!includeEnded) {
-      campaigns = campaigns.filter(c => c.status !== 'Kết thúc');
-    }
-    
-    return campaigns.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  }
+export const getCampaigns = async (includeEnded = false): Promise<Campaign[]> => {
+  const campaigns = await loadCampaigns();
+  return includeEnded
+    ? campaigns
+    : campaigns.filter((campaign) => campaign.status !== 'Kết thúc');
+};
+
+export const createCampaign = async (data: Omit<Campaign, 'id'>): Promise<string> => {
+  const campaigns = await loadCampaigns();
+  const now = new Date().toISOString();
+  const campaign = normalizeCampaign({
+    ...data,
+    id: newId(),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await saveCampaigns([campaign, ...campaigns]);
+  return campaign.id as string;
 };
 
 export const updateCampaign = async (id: string, data: Partial<Campaign>): Promise<void> => {
-  try {
-    const docRef = doc(db, CAMPAIGNS_COLLECTION, id);
-    
-    // Recalculate conversion rate if counts changed
-    let updateData = { ...data };
-    if (data.registeredCount !== undefined || data.targetCount !== undefined) {
-      const registered = data.registeredCount ?? 0;
-      const target = data.targetCount ?? 1;
-      updateData.conversionRate = target > 0 ? (registered / target) * 100 : 0;
-    }
-    
-    await updateDoc(docRef, {
-      ...updateData,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error('Error updating campaign:', error);
-    throw new Error('Không thể cập nhật chiến dịch');
-  }
+  const campaigns = await loadCampaigns();
+  await saveCampaigns(
+    campaigns.map((campaign) =>
+      campaign.id === id
+        ? normalizeCampaign({
+            ...campaign,
+            ...data,
+            id,
+            updatedAt: new Date().toISOString(),
+          })
+        : campaign
+    )
+  );
 };
 
 export const deleteCampaign = async (id: string): Promise<void> => {
-  try {
-    const docRef = doc(db, CAMPAIGNS_COLLECTION, id);
-    await deleteDoc(docRef);
-  } catch (error) {
-    console.error('Error deleting campaign:', error);
-    throw new Error('Không thể xóa chiến dịch');
-  }
+  const campaigns = await loadCampaigns();
+  await saveCampaigns(campaigns.filter((campaign) => campaign.id !== id));
 };
 
 export const incrementRegistered = async (id: string): Promise<void> => {
-  const campaigns = await getCampaigns(true);
-  const campaign = campaigns.find(c => c.id === id);
-  if (campaign) {
-    await updateCampaign(id, { 
-      registeredCount: (campaign.registeredCount || 0) + 1,
-      targetCount: campaign.targetCount,
-    });
-  }
+  const campaigns = await loadCampaigns();
+  await saveCampaigns(
+    campaigns.map((campaign) =>
+      campaign.id === id
+        ? {
+            ...campaign,
+            registeredCount: campaign.registeredCount + 1,
+            updatedAt: new Date().toISOString(),
+          }
+        : campaign
+    )
+  );
 };

@@ -3,8 +3,14 @@
  */
 
 import { useState, useEffect } from 'react';
-import * as campaignService from '../services/campaignService';
-import { Campaign, CampaignStatus } from '../services/campaignService';
+import {
+  createCampaign as createCampaignRecord,
+  deleteCampaign as deleteCampaignRecord,
+  getCampaigns,
+  incrementRegistered as incrementRegisteredRecord,
+  updateCampaign as updateCampaignRecord,
+} from '../services/campaignService';
+import type { Campaign } from '../services/campaignService';
 
 interface UseCampaignsReturn {
   campaigns: Campaign[];
@@ -27,7 +33,7 @@ export const useCampaigns = (includeEnded: boolean = false): UseCampaignsReturn 
     try {
       setLoading(true);
       setError(null);
-      const data = await campaignService.getCampaigns(includeEnded);
+      const data = await getCampaigns(includeEnded);
       setCampaigns(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -43,23 +49,23 @@ export const useCampaigns = (includeEnded: boolean = false): UseCampaignsReturn 
   const activeCampaigns = campaigns.filter(c => c.status === 'Đang mở');
 
   const createCampaign = async (data: Omit<Campaign, 'id'>): Promise<string> => {
-    const id = await campaignService.createCampaign(data);
+    const id = await createCampaignRecord(data);
     await fetchCampaigns();
     return id;
   };
 
   const updateCampaign = async (id: string, data: Partial<Campaign>): Promise<void> => {
-    await campaignService.updateCampaign(id, data);
+    await updateCampaignRecord(id, data);
     await fetchCampaigns();
   };
 
   const deleteCampaign = async (id: string): Promise<void> => {
-    await campaignService.deleteCampaign(id);
+    await deleteCampaignRecord(id);
     await fetchCampaigns();
   };
 
   const incrementRegistered = async (id: string): Promise<void> => {
-    await campaignService.incrementRegistered(id);
+    await incrementRegisteredRecord(id);
     await fetchCampaigns();
   };
 

@@ -1,108 +1,45 @@
-/**
- * useLeads Hook - Realtime listener version
- */
+import { useState, useEffect } from 'react';
+import { Lead, LeadService } from '../services/leadService';
+import { supabase } from '../config/supabase';
 
-import { useState, useEffect, useMemo } from 'react';
-import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
-import { db } from '../config/firebase';
-import * as leadService from '../services/leadService';
-import { Lead, LeadStatus, LeadSource } from '../services/leadService';
-
-interface UseLeadsProps {
-  status?: LeadStatus;
-  source?: LeadSource;
-}
-
-interface UseLeadsReturn {
-  leads: Lead[];
-  stats: Record<LeadStatus, number>;
-  loading: boolean;
-  error: string | null;
-  createLead: (data: Omit<Lead, 'id'>) => Promise<string>;
-  updateLead: (id: string, data: Partial<Lead>) => Promise<void>;
-  updateStatus: (id: string, status: LeadStatus) => Promise<void>;
-  deleteLead: (id: string) => Promise<void>;
-  assignLeads: (ids: string[], assignedTo: string, name: string) => Promise<void>;
-  refresh: () => void;
-}
-
-const DEFAULT_STATS: Record<LeadStatus, number> = {
-  'Mới': 0, 'Đang liên hệ': 0, 'Quan tâm': 0, 'Hẹn test': 0, 'Đã test': 0, 'Đăng ký': 0, 'Từ chối': 0,
-};
-
-export const useLeads = (props?: UseLeadsProps): UseLeadsReturn => {
-  const [allLeads, setAllLeads] = useState<Lead[]>([]);
+export const useLeads = () => {
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  
+  const fetchLeads = async () => {
+    try {
+      setLoading(true);
+      const data = await LeadService.getLeads();
+      setLeads(data);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || 'Lỗi khi tải danh sách leads');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Realtime listener
   useEffect(() => {
-    setLoading(true);
-    setError(null);
-
-    const q = query(collection(db, 'leads'), orderBy('createdAt', 'desc'));
+    fetchLeads();
     
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        } as Lead));
-        setAllLeads(data);
-        setLoading(false);
-      },
-      (err) => {
-        console.error('Error listening to leads:', err);
-        setError(err.message || 'Không thể tải danh sách khách hàng');
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
+    // Subscribe to realtime changes
+    const channel = supabase.channel('public:leads')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
+        fetchLeads();
+      })
+      .subscribe();
+      
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
-  // Filter leads based on props
-  const leads = useMemo(() => {
-    let filtered = allLeads;
-    if (props?.status) {
-      filtered = filtered.filter(l => l.status === props.status);
-    }
-    if (props?.source) {
-      filtered = filtered.filter(l => l.source === props.source);
-    }
-    return filtered;
-  }, [allLeads, props?.status, props?.source]);
-
-  // Calculate stats from all leads
-  const stats = useMemo(() => {
-    const result = { ...DEFAULT_STATS };
-    allLeads.forEach(lead => {
-      if (result[lead.status] !== undefined) {
-        result[lead.status]++;
-      }
-    });
-    return result;
-  }, [allLeads]);
-
-  const createLead = async (data: Omit<Lead, 'id'>): Promise<string> => {
-    return await leadService.createLead(data);
-  };
-
-  const updateLead = async (id: string, data: Partial<Lead>): Promise<void> => {
-    await leadService.updateLead(id, data);
-  };
-
-  const updateStatus = async (id: string, status: LeadStatus): Promise<void> => {
-    await leadService.updateLeadStatus(id, status);
-  };
-
-  const deleteLead = async (id: string): Promise<void> => {
-    await leadService.deleteLead(id);
-  };
-
-  const assignLeads = async (ids: string[], assignedTo: string, name: string): Promise<void> => {
-    await leadService.assignLeads(ids, assignedTo, name);
+  const stats = {
+    total: leads.length,
+    new: leads.filter(l => l.status === 'Mới').length,
+    contacted: leads.filter(l => l.status === 'Đang liên hệ' || l.status === 'Quan tâm').length,
+    converted: leads.filter(l => l.status === 'Đăng ký').length
   };
 
   return {
@@ -110,11 +47,23 @@ export const useLeads = (props?: UseLeadsProps): UseLeadsReturn => {
     stats,
     loading,
     error,
-    createLead,
-    updateLead,
-    updateStatus,
-    deleteLead,
-    assignLeads,
-    refresh: () => {}, // No-op, realtime updates automatically
+    createLead: async (data: any) => {
+      const newLead = await LeadService.createLead(data);
+      await fetchLeads();
+      return newLead;
+    },
+    updateLead: async (id: string, data: any) => {
+      await LeadService.updateLead(id, data);
+      await fetchLeads();
+    },
+    updateStatus: async (id: string, status: any) => {
+      await LeadService.updateLead(id, { status });
+      await fetchLeads();
+    },
+    deleteLead: async (id: string) => {
+      await LeadService.deleteLead(id);
+      await fetchLeads();
+    },
+    refresh: fetchLeads,
   };
 };

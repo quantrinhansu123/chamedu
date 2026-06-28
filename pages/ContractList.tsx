@@ -7,18 +7,22 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileText, Plus, Search, Eye, Trash2, DollarSign, Filter, X, CreditCard, Printer, Download } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
-import { Contract, ContractStatus } from '../types';
+import { Contract, ContractStatus, ContractType, PaymentMethod, ContractItem, StudentStatus } from '../types';
 import { useContracts } from '../src/hooks/useContracts';
-import { formatCurrency } from '../src/utils/currencyUtils';
+import { formatCurrency, numberToWords } from '../src/utils/currencyUtils';
+import { ImportExportButtons } from '../components/ImportExportButtons';
+import {
+  CONTRACT_FIELDS,
+  CONTRACT_MAPPING,
+  prepareContractExport,
+} from '../src/utils/excelUtils';
 import { printContract, downloadContractAsPdf, ContractCenterInfo, DEFAULT_CENTER_INFO } from '../src/utils/contract-pdf-generator';
 import { updateContract } from '../src/services/contractService';
 import { createEnrollment } from '../src/services/enrollmentService';
 import { useAuth } from '../src/hooks/useAuth';
 import { useStaff } from '../src/hooks/useStaff';
 import { getCenters, Center } from '../src/services/centerService';
-import { StudentService } from '../src/services/studentService';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
+import { supabase } from '../src/config/supabase';
 
 /**
  * Enrich contract items with className for PDF display.
@@ -46,9 +50,13 @@ const enrichContractItemsWithClassName = async (contract: Contract): Promise<Con
   await Promise.all(
     Array.from(classIdsToFetch).map(async (classId) => {
       try {
-        const classDoc = await getDoc(doc(db, 'classes', classId));
-        if (classDoc.exists()) {
-          classNameMap[classId] = classDoc.data().name || '';
+        const { data, error } = await supabase
+          .from('classes')
+          .select('name')
+          .eq('id', classId)
+          .maybeSingle();
+        if (!error && data?.name) {
+          classNameMap[classId] = data.name;
         }
       } catch (e) {
         console.error('Error fetching class:', classId, e);
@@ -60,7 +68,7 @@ const enrichContractItemsWithClassName = async (contract: Contract): Promise<Con
   let fallbackClassName = contract.className || classNameMap[contract.classId || ''] || '';
   if (!fallbackClassName && contract.studentId) {
     try {
-      const student = await StudentService.getStudentById(contract.studentId);
+      const student = await getStudentByIdLite(contract.studentId);
       fallbackClassName = student?.class || '';
     } catch (e) {
       console.error('Error fetching student:', e);
@@ -75,6 +83,52 @@ const enrichContractItemsWithClassName = async (contract: Contract): Promise<Con
   });
 
   return { ...contract, items: updatedItems };
+};
+
+type StudentLite = {
+  id: string;
+  fullName: string;
+  code?: string;
+  class?: string;
+  classId?: string;
+  branch?: string;
+  dob?: string;
+  parentName?: string;
+  parentPhone?: string;
+  phone?: string;
+};
+
+const mapStudentLite = (row: any): StudentLite => ({
+  id: row.id,
+  fullName: row.full_name || '',
+  code: row.code || '',
+  class: row.class_name || '',
+  classId: row.class_id || '',
+  branch: row.branch || '',
+  dob: row.dob || '',
+  parentName: row.parent_name || '',
+  parentPhone: row.parent_phone || '',
+  phone: row.phone || '',
+});
+
+const getStudentByIdLite = async (id: string): Promise<StudentLite | null> => {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from('students')
+    .select('id, full_name, code, class_name, class_id, branch, dob, parent_name, parent_phone, phone')
+    .eq('id', id)
+    .maybeSingle();
+  if (error || !data) return null;
+  return mapStudentLite(data);
+};
+
+const getStudentsLite = async (): Promise<StudentLite[]> => {
+  const { data, error } = await supabase
+    .from('students')
+    .select('id, full_name, code, class_name, class_id, branch, dob, parent_name, parent_phone, phone')
+    .order('created_at', { ascending: false });
+  if (error || !data) return [];
+  return data.map(mapStudentLite);
 };
 
 export const ContractList: React.FC = () => {
@@ -122,7 +176,7 @@ export const ContractList: React.FC = () => {
 
       // If contract has studentId, lookup student's branch
       if (contract.studentId) {
-        const student = await StudentService.getStudentById(contract.studentId);
+        const student = await getStudentByIdLite(contract.studentId);
         console.log('[DEBUG] getCenterInfo - student branch:', student?.branch);
         if (student?.branch) {
           const studentCenter = centers.find(c =>
@@ -176,7 +230,7 @@ export const ContractList: React.FC = () => {
     let contractWithLatestData = { ...contract };
     if (contract.studentId && !contract.parentPhone) {
       try {
-        const student = await StudentService.getStudentById(contract.studentId);
+        const student = await getStudentByIdLite(contract.studentId);
         if (student) {
           contractWithLatestData = {
             ...contract,
@@ -205,7 +259,7 @@ export const ContractList: React.FC = () => {
     let contractWithLatestData = { ...contract };
     if (contract.studentId && !contract.parentPhone) {
       try {
-        const student = await StudentService.getStudentById(contract.studentId);
+        const student = await getStudentByIdLite(contract.studentId);
         if (student) {
           contractWithLatestData = {
             ...contract,
@@ -224,9 +278,123 @@ export const ContractList: React.FC = () => {
     await downloadContractAsPdf(contractWithLatestData, centerInfo);
   };
 
-  const { contracts, loading, error, deleteContract, updateStatus, refresh } = useContracts(
+  const { contracts, loading, error, deleteContract, updateStatus, refresh, createContract } = useContracts(
     statusFilter ? { status: statusFilter } : undefined
   );
+
+  const mapImportStatus = (value?: string): ContractStatus => {
+    const v = (value || '').trim().toLowerCase();
+    if (!v) return ContractStatus.PENDING;
+    const entries = Object.values(ContractStatus) as string[];
+    const exact = entries.find(s => s.toLowerCase() === v);
+    if (exact) return exact as ContractStatus;
+    if (v.includes('thanh toan') && !v.includes('no')) return ContractStatus.PAID;
+    if (v.includes('no')) return ContractStatus.PARTIAL;
+    if (v.includes('huy')) return ContractStatus.CANCELLED;
+    if (v.includes('nhap')) return ContractStatus.DRAFT;
+    if (v.includes('cho')) return ContractStatus.PENDING;
+    return ContractStatus.PENDING;
+  };
+
+  const mapImportPaymentMethod = (value?: string): PaymentMethod => {
+    const v = (value || '').trim().toLowerCase();
+    if (!v) return PaymentMethod.CASH;
+    const entries = Object.values(PaymentMethod) as string[];
+    const exact = entries.find(s => s.toLowerCase() === v);
+    if (exact) return exact as PaymentMethod;
+    if (v.includes('chuyen')) return PaymentMethod.TRANSFER;
+    if (v.includes('gop')) return PaymentMethod.INSTALLMENT;
+    if (v.includes('toan bo')) return PaymentMethod.FULL;
+    return PaymentMethod.CASH;
+  };
+
+  const handleImportContracts = async (
+    data: Record<string, any>[]
+  ): Promise<{ success: number; errors: string[] }> => {
+    const errors: string[] = [];
+    let success = 0;
+    const students = await getStudentsLite();
+    const createdBy = user?.email || user?.uid || 'import';
+
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const rowLabel = row.studentName || row.studentCode || `Dòng ${i + 1}`;
+      try {
+        if (!row.studentName && !row.studentCode) {
+          errors.push(`Dòng ${i + 1}: Thiếu học viên hoặc mã học viên`);
+          continue;
+        }
+
+        const student = students.find(
+          s =>
+            (row.studentCode && s.code === String(row.studentCode).trim()) ||
+            (row.studentName &&
+              s.fullName?.trim().toLowerCase() === String(row.studentName).trim().toLowerCase())
+        );
+
+        const sessions = Number(row.sessions) || 0;
+        const unitPrice = Number(row.unitPrice) || 0;
+        const subtotal =
+          Number(row.totalAmount) > 0 ? Number(row.totalAmount) : sessions * unitPrice;
+        const paidAmount = Number(row.paidAmount) || 0;
+        const remainingAmount =
+          row.remainingAmount !== undefined && row.remainingAmount !== ''
+            ? Number(row.remainingAmount)
+            : Math.max(0, subtotal - paidAmount);
+
+        let status = mapImportStatus(row.status);
+        if (!row.status) {
+          status = remainingAmount <= 0 ? ContractStatus.PAID : paidAmount > 0 ? ContractStatus.PARTIAL : ContractStatus.PENDING;
+        }
+
+        const item: ContractItem = {
+          type: 'course',
+          id: `import-${Date.now()}-${i}`,
+          name: row.courseName || 'Khóa học',
+          className: row.className || student?.class || '',
+          classId: student?.classId || undefined,
+          unitPrice,
+          quantity: sessions,
+          subtotal,
+          discount: 0,
+          finalPrice: subtotal,
+        };
+
+        await createContract({
+          type: ContractType.STUDENT,
+          studentId: student?.id || '',
+          studentName: row.studentName || student?.fullName || '',
+          studentDOB: student?.dob || '',
+          parentName: row.parentName || student?.parentName || '',
+          parentPhone: row.parentPhone || student?.parentPhone || student?.phone || '',
+          className: row.className || student?.class || '',
+          classId: student?.classId || undefined,
+          branch: row.branch || student?.branch || '',
+          items: [item],
+          subtotal,
+          totalDiscount: 0,
+          totalAmount: subtotal,
+          totalAmountInWords: numberToWords(subtotal),
+          paymentMethod: mapImportPaymentMethod(row.paymentMethod),
+          paidAmount,
+          remainingAmount,
+          contractDate: row.contractDate || new Date().toISOString().split('T')[0],
+          totalSessions: sessions,
+          pricePerSession: unitPrice || (sessions > 0 ? Math.round(subtotal / sessions) : 0),
+          status,
+          notes: row.notes || '',
+          createdBy,
+        });
+
+        success++;
+      } catch (err: any) {
+        errors.push(`${rowLabel}: ${err.message || 'Lỗi'}`);
+      }
+    }
+
+    await refresh();
+    return { success, errors };
+  };
 
   // Compute actual status based on payment amounts (fixes data inconsistency)
   const getComputedStatus = (contract: Contract): ContractStatus => {
@@ -326,55 +494,28 @@ export const ContractList: React.FC = () => {
         ? totalSessions
         : Math.floor(totalSessions * (newPaidAmount / totalAmount));
       
-      // Update student and create enrollment record
       if (selectedContract.studentId) {
-        const { doc, updateDoc, getDoc } = await import('firebase/firestore');
-        const { db } = await import('../src/config/firebase');
-        const studentRef = doc(db, 'students', selectedContract.studentId);
-        const studentSnap = await getDoc(studentRef);
-        
-        if (studentSnap.exists()) {
-          const studentData = studentSnap.data();
+        const { StudentService } = await import('../src/services/studentService');
+        const { getContracts } = await import('../src/services/contractService');
+        const student = await StudentService.getStudentById(selectedContract.studentId);
+        if (student) {
           const oldPaidSessions = Math.floor(totalSessions * (currentPaid / totalAmount));
           const sessionDiff = newPaidSessions - oldPaidSessions;
-          
-          const updateData: Record<string, any> = {
-            registeredSessions: (studentData.registeredSessions || 0) + sessionDiff,
-          };
-          
-          // Check for other debt contracts of this student
-          const { collection, getDocs, query, where } = await import('firebase/firestore');
-          const otherDebtQuery = query(
-            collection(db, 'contracts'),
-            where('studentId', '==', selectedContract.studentId),
-            where('status', '==', 'Nợ hợp đồng')
-          );
-          const otherDebtSnap = await getDocs(otherDebtQuery);
-          
-          // Calculate total debt from ALL debt contracts (excluding current if it's now PAID)
-          let totalDebt = 0;
-          otherDebtSnap.docs.forEach(d => {
-            if (d.id !== selectedContract.id) {
-              totalDebt += (d.data().remainingAmount || 0);
-            }
+          const debtContracts = await getContracts({
+            studentId: selectedContract.studentId,
+            status: ContractStatus.DEBT,
           });
-          
-          // Add current contract's remaining if still PARTIAL
+          let totalDebt = debtContracts
+            .filter((c) => c.id !== selectedContract.id)
+            .reduce((sum, c) => sum + (c.remainingAmount || 0), 0);
           if (newStatus === ContractStatus.PARTIAL) {
             totalDebt += newRemainingAmount;
           }
-          
-          if (totalDebt > 0) {
-            updateData.contractDebt = totalDebt;
-            updateData.status = 'Nợ hợp đồng';
-          } else {
-            updateData.contractDebt = 0;
-            updateData.status = 'Đang học';
-          }
-          
-          await updateDoc(studentRef, updateData);
-          
-          // Create enrollment record for additional payment
+          await StudentService.updateStudent(selectedContract.studentId, {
+            registeredSessions: (student.registeredSessions || 0) + sessionDiff,
+            status: totalDebt > 0 ? StudentStatus.CONTRACT_DEBT : StudentStatus.ACTIVE,
+            ...(totalDebt > 0 ? { contractDebt: totalDebt } : { contractDebt: 0 }),
+          } as any);
           if (sessionDiff > 0) {
             await createEnrollment({
               studentId: selectedContract.studentId,
@@ -422,12 +563,24 @@ export const ContractList: React.FC = () => {
           <FileText className="text-indigo-600" size={24} />
           Danh sách hợp đồng
         </h2>
-        <button
-          onClick={() => navigate('/finance/contracts/create')}
-          className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm font-medium"
-        >
-          <Plus size={16} /> Tạo hợp đồng
-        </button>
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          <ImportExportButtons
+            data={filteredContracts}
+            prepareExport={prepareContractExport}
+            exportFileName="DanhSachHopDong"
+            fields={CONTRACT_FIELDS}
+            mapping={CONTRACT_MAPPING}
+            onImport={handleImportContracts}
+            templateFileName="MauNhapHopDong"
+            entityName="hợp đồng"
+          />
+          <button
+            onClick={() => navigate('/finance/contracts/create')}
+            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm font-medium"
+          >
+            <Plus size={16} /> Tạo hợp đồng
+          </button>
+        </div>
       </div>
 
       {/* Filters */}

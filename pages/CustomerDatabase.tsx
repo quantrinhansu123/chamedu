@@ -3,7 +3,7 @@
  * Kho dữ liệu khách hàng tiềm năng (Leads)
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Search, Phone, Mail, Calendar, Tag, X, Trash2, UserCheck, Filter, Edit2, Target, UserPlus, FileText, Settings, Palette } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
@@ -13,9 +13,6 @@ import { useStaff } from '../src/hooks/useStaff';
 import { Lead, LeadStatus, LeadSource } from '../src/services/leadService';
 import { Campaign } from '../src/services/campaignService';
 import { Staff } from '../types';
-import { db } from '../src/config/firebase';
-import { collection, doc, getDoc, setDoc } from 'firebase/firestore';
-
 // Default status colors
 const DEFAULT_STATUS_COLORS: Record<string, string> = {
   'Mới': 'bg-blue-100 text-blue-700',
@@ -51,7 +48,7 @@ interface StatusConfig {
 
 export const CustomerDatabase: React.FC = () => {
   const navigate = useNavigate();
-  const { leads, stats, loading, error, createLead, updateLead, updateStatus, deleteLead } = useLeads();
+  const { leads, loading, error, createLead, updateLead, updateStatus, deleteLead } = useLeads();
   const { campaigns } = useCampaigns(false); // Only active campaigns
   const { staff } = useStaff();
   
@@ -73,7 +70,7 @@ export const CustomerDatabase: React.FC = () => {
   useEffect(() => {
     const loadStatusConfig = async () => {
       try {
-        const docRef = doc(db, 'settings', 'leadStatusConfig');
+        const docRef = doc(null as any /* firebase removed */, 'settings', 'leadStatusConfig');
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
           setStatusConfigs(docSnap.data().statuses || []);
@@ -108,7 +105,7 @@ export const CustomerDatabase: React.FC = () => {
   // Save status config
   const saveStatusConfig = async (configs: StatusConfig[]) => {
     try {
-      await setDoc(doc(db, 'settings', 'leadStatusConfig'), { statuses: configs });
+      await setDoc(doc(null as any /* firebase removed */, 'settings', 'leadStatusConfig'), { statuses: configs });
       setStatusConfigs(configs);
     } catch (err) {
       console.error('Error saving status config:', err);
@@ -178,34 +175,51 @@ export const CustomerDatabase: React.FC = () => {
     });
   };
 
-  // Create contract from lead
-  const handleCreateContract = (lead: Lead) => {
-    navigate('/finance/contracts/create', { 
-      state: { 
-        leadId: lead.id,
-        leadName: lead.name,
-        leadPhone: lead.phone,
-        childName: lead.childName
-      }
-    });
-  };
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+  const searchedLeads = useMemo(() => {
+    if (!normalizedSearchTerm) return leads;
 
-  // Filter leads
-  let filteredLeads = leads.filter(l =>
-    l.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    l.phone.includes(searchTerm) ||
-    (l.childName && l.childName.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
-  
-  if (statusFilter) {
-    filteredLeads = filteredLeads.filter(l => l.status === statusFilter);
-  }
-  if (sourceFilter) {
-    filteredLeads = filteredLeads.filter(l => l.source === sourceFilter);
-  }
+    return leads.filter(l =>
+      l.name.toLowerCase().includes(normalizedSearchTerm) ||
+      l.phone.includes(normalizedSearchTerm) ||
+      (l.childName && l.childName.toLowerCase().includes(normalizedSearchTerm))
+    );
+  }, [leads, normalizedSearchTerm]);
+
+  const leadsForStatusCounts = useMemo(() => {
+    if (!sourceFilter) return searchedLeads;
+    return searchedLeads.filter(l => l.source === sourceFilter);
+  }, [searchedLeads, sourceFilter]);
+
+  const leadsForSourceCounts = useMemo(() => {
+    if (!statusFilter) return searchedLeads;
+    return searchedLeads.filter(l => l.status === statusFilter);
+  }, [searchedLeads, statusFilter]);
+
+  const filteredLeads = useMemo(() => {
+    if (!statusFilter) return leadsForStatusCounts;
+    return leadsForStatusCounts.filter(l => l.status === statusFilter);
+  }, [leadsForStatusCounts, statusFilter]);
+
+  const statusCounts = useMemo(() => {
+    return STATUS_OPTIONS.reduce((acc, status) => {
+      acc[status] = leadsForStatusCounts.filter(l => l.status === status).length;
+      return acc;
+    }, {} as Record<string, number>);
+  }, [STATUS_OPTIONS, leadsForStatusCounts]);
+
+  const sourceCounts = useMemo(() => {
+    return SOURCE_OPTIONS.reduce((acc, source) => {
+      acc[source] = leadsForSourceCounts.filter(l => l.source === source).length;
+      return acc;
+    }, {} as Record<string, number>);
+  }, [leadsForSourceCounts]);
 
   const totalLeads = leads.length;
-  const conversionRate = totalLeads > 0 ? ((stats['Đăng ký'] / totalLeads) * 100).toFixed(1) : '0';
+  const filteredTotalLeads = filteredLeads.length;
+  const convertedFilteredLeads = filteredLeads.filter(l => l.status === 'Đăng ký').length;
+  const conversionRate = filteredTotalLeads > 0 ? ((convertedFilteredLeads / filteredTotalLeads) * 100).toFixed(1) : '0';
+  const hasActiveFilters = Boolean(normalizedSearchTerm || statusFilter || sourceFilter);
 
   return (
     <div className="space-y-6">
@@ -248,7 +262,7 @@ export const CustomerDatabase: React.FC = () => {
                 statusFilter === status ? 'ring-2 ring-indigo-500' : ''
               } ${STATUS_COLORS[status]}`}
             >
-              <div className="text-xl font-bold">{stats[status]}</div>
+              <div className="text-xl font-bold">{statusCounts[status] || 0}</div>
               <div className="text-xs">{status}</div>
             </button>
           ))}
@@ -273,12 +287,12 @@ export const CustomerDatabase: React.FC = () => {
           >
             <option value="">Tất cả nguồn</option>
             {SOURCE_OPTIONS.map(s => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>{s} ({sourceCounts[s] || 0})</option>
             ))}
           </select>
-          {(statusFilter || sourceFilter) && (
+          {hasActiveFilters && (
             <button
-              onClick={() => { setStatusFilter(''); setSourceFilter(''); }}
+              onClick={() => { setSearchTerm(''); setStatusFilter(''); setSourceFilter(''); }}
               className="px-3 py-2 text-gray-500 hover:text-gray-700 text-sm flex items-center gap-1"
             >
               <X size={14} /> Xóa bộ lọc
@@ -290,8 +304,10 @@ export const CustomerDatabase: React.FC = () => {
       {/* Summary Bar */}
       <div className="bg-gradient-to-r from-indigo-500 to-purple-600 p-4 rounded-xl text-white flex justify-between items-center">
         <div>
-          <span className="text-2xl font-bold">{totalLeads}</span>
-          <span className="ml-2 text-indigo-100">khách hàng</span>
+          <span className="text-2xl font-bold">{filteredTotalLeads}</span>
+          <span className="ml-2 text-indigo-100">
+            {hasActiveFilters ? `khách hàng phù hợp / ${totalLeads} tổng` : 'khách hàng'}
+          </span>
         </div>
         <div className="text-right">
           <span className="text-sm text-indigo-100">Tỷ lệ chuyển đổi:</span>
@@ -401,13 +417,7 @@ export const CustomerDatabase: React.FC = () => {
                       >
                         <UserPlus size={15} />
                       </button>
-                      <button
-                        onClick={() => handleCreateContract(lead)}
-                        className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
-                        title="Tạo hợp đồng"
-                      >
-                        <FileText size={15} />
-                      </button>
+
                       <button
                         onClick={() => {
                           setEditingLead(lead);
@@ -442,8 +452,12 @@ export const CustomerDatabase: React.FC = () => {
           statusOptions={STATUS_OPTIONS}
           onClose={() => setShowModal(false)}
           onSubmit={async (data) => {
-            await createLead(data);
-            setShowModal(false);
+            try {
+              await createLead(data);
+              setShowModal(false);
+            } catch (err: any) {
+              alert('Lỗi: ' + (err.message || 'Không thể lưu khách hàng'));
+            }
           }}
         />
       )}
@@ -461,10 +475,14 @@ export const CustomerDatabase: React.FC = () => {
           }}
           onSubmit={async (data) => {
             if (editingLead.id) {
-              await updateLead(editingLead.id, data);
+              try {
+                await updateLead(editingLead.id, data);
+                setShowEditModal(false);
+                setEditingLead(null);
+              } catch (err: any) {
+                alert('Lỗi: ' + (err.message || 'Không thể cập nhật khách hàng'));
+              }
             }
-            setShowEditModal(false);
-            setEditingLead(null);
           }}
         />
       )}
@@ -580,6 +598,21 @@ interface LeadModalProps {
 }
 
 const LeadModal: React.FC<LeadModalProps> = ({ lead, campaigns, staff, statusOptions, onClose, onSubmit }) => {
+  const campaignNameById = useMemo(
+    () => new Map(campaigns.filter((campaign) => campaign.id).map((campaign) => [campaign.id as string, campaign.name])),
+    [campaigns]
+  );
+  const selectableCampaigns = useMemo(
+    () => campaigns.filter((campaign) => Boolean(campaign.id)),
+    [campaigns]
+  );
+  const initialCampaignIds = lead?.campaignIds?.length ? lead.campaignIds : (lead?.campaignId ? [lead.campaignId] : []);
+  const initialCampaignNames = lead?.campaignNames?.length
+    ? lead.campaignNames
+    : lead?.campaignName
+      ? [lead.campaignName]
+      : initialCampaignIds.map((id) => campaignNameById.get(id)).filter((name): name is string => Boolean(name));
+
   const [formData, setFormData] = useState({
     name: lead?.name || '',
     phone: lead?.phone || '',
@@ -590,12 +623,47 @@ const LeadModal: React.FC<LeadModalProps> = ({ lead, campaigns, staff, statusOpt
     status: lead?.status || 'Mới' as LeadStatus,
     note: lead?.note || '',
     // Support multiple campaigns
-    campaignIds: lead?.campaignIds || (lead?.campaignId ? [lead.campaignId] : []),
-    campaignNames: lead?.campaignNames || (lead?.campaignName ? [lead.campaignName] : []),
+    campaignIds: initialCampaignIds,
+    campaignNames: initialCampaignNames,
     assignedTo: lead?.assignedTo || '',
     assignedToName: lead?.assignedToName || '',
   });
   const [loading, setLoading] = useState(false);
+
+  const toggleCampaign = (campaign: Campaign, checked: boolean) => {
+    if (!campaign.id) return;
+
+    setFormData((prev) => {
+      const campaignIds = checked
+        ? Array.from(new Set([...prev.campaignIds, campaign.id as string]))
+        : prev.campaignIds.filter((id) => id !== campaign.id);
+      const campaignNames = checked
+        ? Array.from(new Set([...prev.campaignNames, campaign.name]))
+        : prev.campaignNames.filter((name) => name !== campaign.name);
+
+      return {
+        ...prev,
+        campaignIds,
+        campaignNames,
+      };
+    });
+  };
+
+  const selectAllCampaigns = () => {
+    setFormData((prev) => ({
+      ...prev,
+      campaignIds: selectableCampaigns.map((campaign) => campaign.id as string),
+      campaignNames: selectableCampaigns.map((campaign) => campaign.name),
+    }));
+  };
+
+  const clearCampaigns = () => {
+    setFormData((prev) => ({
+      ...prev,
+      campaignIds: [],
+      campaignNames: [],
+    }));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -608,6 +676,8 @@ const LeadModal: React.FC<LeadModalProps> = ({ lead, campaigns, staff, statusOpt
       await onSubmit({
         ...formData,
         childAge: formData.childAge ? parseInt(formData.childAge.toString()) : undefined,
+        campaignId: formData.campaignIds[0] || undefined,
+        campaignName: formData.campaignNames[0] || undefined,
       });
     } finally {
       setLoading(false);
@@ -720,43 +790,50 @@ const LeadModal: React.FC<LeadModalProps> = ({ lead, campaigns, staff, statusOpt
 
           {/* Campaign - Multiple Select */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
-              <Target size={14} className="text-orange-500" />
-              Chiến dịch (có thể chọn nhiều)
-            </label>
-            <div className="border border-gray-300 rounded-lg p-2 max-h-32 overflow-y-auto space-y-1">
-              {campaigns.filter(c => c.status === 'Đang mở').length === 0 ? (
-                <p className="text-sm text-gray-400">Chưa có chiến dịch đang mở</p>
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <label className="block text-sm font-medium text-gray-700 flex items-center gap-1">
+                <Target size={14} className="text-orange-500" />
+                Chiến dịch
+              </label>
+              {selectableCampaigns.length > 0 && (
+                <div className="flex items-center gap-2 text-xs">
+                  <button type="button" onClick={selectAllCampaigns} className="text-indigo-600 hover:underline">
+                    Chọn tất cả
+                  </button>
+                  <span className="text-gray-300">|</span>
+                  <button type="button" onClick={clearCampaigns} className="text-gray-500 hover:underline">
+                    Bỏ chọn
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="border border-gray-300 rounded-lg p-2 max-h-44 overflow-y-auto space-y-1">
+              {selectableCampaigns.length === 0 ? (
+                <p className="text-sm text-gray-400">Chưa có chiến dịch khả dụng</p>
               ) : (
-                campaigns.filter(c => c.status === 'Đang mở').map(c => (
+                selectableCampaigns.map(c => (
                   <label key={c.id} className="flex items-center gap-2 cursor-pointer hover:bg-gray-50 p-1 rounded">
                     <input
                       type="checkbox"
                       checked={formData.campaignIds.includes(c.id || '')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormData({
-                            ...formData,
-                            campaignIds: [...formData.campaignIds, c.id || ''],
-                            campaignNames: [...formData.campaignNames, c.name]
-                          });
-                        } else {
-                          setFormData({
-                            ...formData,
-                            campaignIds: formData.campaignIds.filter(id => id !== c.id),
-                            campaignNames: formData.campaignNames.filter(n => n !== c.name)
-                          });
-                        }
-                      }}
+                      onChange={(e) => toggleCampaign(c, e.target.checked)}
                       className="rounded border-gray-300 text-indigo-600"
                     />
-                    <span className="text-sm">{c.name}</span>
+                    <span className="text-sm flex-1">{c.name}</span>
+                    <span className="text-[10px] text-gray-400">{c.status}</span>
                   </label>
                 ))
               )}
             </div>
             {formData.campaignIds.length > 0 && (
-              <p className="text-xs text-gray-500 mt-1">Đã chọn: {formData.campaignIds.length} chiến dịch</p>
+              <div className="flex flex-wrap gap-1 mt-2">
+                {formData.campaignNames.map((name) => (
+                  <span key={name} className="inline-flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 rounded text-xs">
+                    <Target size={10} />
+                    {name}
+                  </span>
+                ))}
+              </div>
             )}
           </div>
 

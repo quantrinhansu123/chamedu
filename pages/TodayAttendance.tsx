@@ -1,11 +1,10 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Today's Attendance View
  * Hiển thị dữ liệu điểm danh của ngày hôm nay
  */
 
 import React, { useState, useEffect } from 'react';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { AttendanceRecord, StudentAttendance } from '../types';
 import { Calendar, Users, CheckCircle2, XCircle, Clock, BookOpen } from 'lucide-react';
 
@@ -37,7 +36,7 @@ export const TodayAttendance: React.FC = () => {
       // Note: Firestore query is case-sensitive and exact match
       console.log('[TodayAttendance] Querying attendance for date:', date);
       const attendanceQuery = query(
-        collection(db, 'attendance'),
+        collection(null as any /* firebase removed */, 'attendance'),
         where('date', '==', date)
       );
       const attendanceSnap = await getDocs(attendanceQuery);
@@ -59,7 +58,7 @@ export const TodayAttendance: React.FC = () => {
 
       // Load student attendance records
       const studentAttendanceQuery = query(
-        collection(db, 'studentAttendance'),
+        collection(null as any /* firebase removed */, 'studentAttendance'),
         where('date', '==', date)
       );
       const studentAttendanceSnap = await getDocs(studentAttendanceQuery);

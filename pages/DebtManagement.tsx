@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Debt Management Page
  * Hiển thị danh sách học viên:
@@ -14,8 +15,6 @@ import { useClasses } from '../src/hooks/useClasses';
 import { useSettlementInvoices } from '../src/hooks/useSettlementInvoices';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { formatCurrency } from '../src/utils/currencyUtils';
-import { doc, updateDoc, collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { Student } from '../types';
 import { SettlementModal, SettlementHistoryTable } from '../src/features/debt/components';
 import { getStudentSessionData } from '../src/utils/student-session-utils';
@@ -61,7 +60,7 @@ export const DebtManagement: React.FC = () => {
   useEffect(() => {
     const fetchContracts = async () => {
       try {
-        const contractsSnap = await getDocs(collection(db, 'contracts'));
+        const contractsSnap = await getDocs(collection(null as any /* firebase removed */, 'contracts'));
         const map: Record<string, { startDate: string; category: string }> = {};
 
         contractsSnap.docs.forEach(doc => {
@@ -148,7 +147,7 @@ export const DebtManagement: React.FC = () => {
     try {
       // Get all contracts with "Nợ hợp đồng" status
       const contractsQuery = query(
-        collection(db, 'contracts'),
+        collection(null as any /* firebase removed */, 'contracts'),
         where('status', '==', 'Nợ hợp đồng')
       );
       const contractsSnap = await getDocs(contractsQuery);
@@ -186,7 +185,7 @@ export const DebtManagement: React.FC = () => {
       let updated = 0;
       for (const [studentId, debt] of Object.entries(studentDebts)) {
         try {
-          await updateDoc(doc(db, 'students', studentId), {
+          await updateDoc(doc(null as any /* firebase removed */, 'students', studentId), {
             status: 'Nợ hợp đồng',
             contractDebt: debt.totalDebt,
             nextPaymentDate: debt.nextPaymentDate,
@@ -295,7 +294,7 @@ export const DebtManagement: React.FC = () => {
   const handleSavePaymentDate = async (studentId: string) => {
     if (!paymentDateValue) return;
     try {
-      await updateDoc(doc(db, 'students', studentId), {
+      await updateDoc(doc(null as any /* firebase removed */, 'students', studentId), {
         nextPaymentDate: paymentDateValue,
       });
       setEditingPaymentDate(null);

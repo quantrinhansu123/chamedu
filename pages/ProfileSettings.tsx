@@ -6,9 +6,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Mail, Phone, MapPin, Building2, Briefcase, Save, Camera } from 'lucide-react';
 import { useAuth } from '../src/hooks/useAuth';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
-
 export const ProfileSettings: React.FC = () => {
   const { user, staffData, loading } = useAuth();
   const [saving, setSaving] = useState(false);
@@ -39,7 +36,7 @@ export const ProfileSettings: React.FC = () => {
     setMessage(null);
 
     try {
-      await updateDoc(doc(db, 'staff', staffData.id), {
+      await updateDoc(doc(null as any /* firebase removed */, 'staff', staffData.id), {
         name: formData.name,
         phone: formData.phone,
         address: formData.address,

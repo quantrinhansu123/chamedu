@@ -10,11 +10,11 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "setup:admin": "node scripts/create-admin-staff.js"
+    "setup:admin": "node scripts/create-supabase-admin.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.106.2",
     "dotenv": "^17.2.3",
-    "firebase": "^12.6.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^3.0.4",
     "lucide-react": "^0.556.0",
@@ -32,8 +32,6 @@
     "@types/node": "^24.10.1",
     "@vitejs/plugin-react": "^5.0.0",
     "docx": "^9.5.1",
-    "firebase-admin": "^13.6.0",
-    "firebase-tools": "^14.26.0",
     "jsdom": "^27.2.0",
     "puppeteer": "^24.35.0",
     "typescript": "^5.9.3",

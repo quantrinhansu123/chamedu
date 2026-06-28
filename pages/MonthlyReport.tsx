@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Monthly Report Page
  * Báo cáo học tập theo tháng cho từng học sinh
@@ -37,8 +38,6 @@ import {
   StudentPDFReportData
 } from '../src/services/monthlyReportService';
 import { AttendanceStatus, MonthlyComment, Student, StudentStatus, TestComment } from '../types';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { generateTestCommentPDF, downloadBlob as downloadTestPdfBlob } from '../src/services/testCommentPdfService';
 import { SearchableClassDropdown } from '../src/features/attendance/components/SearchableClassDropdown';
 import { MonthlyCommentTab } from '../src/features/reports/components/MonthlyCommentTab';
@@ -123,7 +122,7 @@ export const MonthlyReport: React.FC = () => {
     setLoadingTests(true);
     try {
       const q = query(
-        collection(db, 'testComments'),
+        collection(null as any /* firebase removed */, 'testComments'),
         where('studentId', '==', studentId)
       );
       const snapshot = await getDocs(q);

@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { ClipboardList, CheckCircle, XCircle, BarChart2, X, Eye, FileDown, Trash2, AlertTriangle, Edit3, Save, Clock, History } from 'lucide-react';
 import { ModalPortal } from '@/components/modal-portal';
@@ -9,8 +10,6 @@ import { useStudents } from '../src/hooks/useStudents';
 import { useStaff } from '../src/hooks/useStaff';
 import { useHolidays } from '../src/hooks/useHolidays';
 import { AttendanceRecord, AttendanceStatus, StudentAttendance, Holiday } from '../types';
-import { collection, query, where, getDocs, doc, updateDoc, addDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import * as XLSX from 'xlsx';
 
 const RECORDS_PER_PAGE = 10;
@@ -51,6 +50,8 @@ export const AttendanceHistory: React.FC = () => {
   const [filterToDate, setFilterToDate] = useState<string>('');
   const [showOnlyValid, setShowOnlyValid] = useState(true);
   const [deletingOrphans, setDeletingOrphans] = useState(false);
+  const [deletingRecordId, setDeletingRecordId] = useState<string | null>(null);
+  const [editRecordAfterLoadId, setEditRecordAfterLoadId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filteredAttendanceIds, setFilteredAttendanceIds] = useState<string[] | null>(null);
   const [filterLoading, setFilterLoading] = useState(false);
@@ -60,9 +61,10 @@ export const AttendanceHistory: React.FC = () => {
   const studentDropdownRef = useRef<HTMLDivElement>(null);
   
   // Permissions
-  const { shouldShowOnlyOwnClasses, staffId } = usePermissions();
+  const { shouldShowOnlyOwnClasses, staffId, canDelete } = usePermissions();
   const { staffData } = useAuth();
   const onlyOwnClasses = shouldShowOnlyOwnClasses('attendance_history');
+  const canDeleteAttendanceHistory = canDelete('attendance_history');
 
   const { classes: allClasses } = useClasses({});
   const { students: allStudents } = useStudents({});
@@ -332,7 +334,7 @@ export const AttendanceHistory: React.FC = () => {
 
       setFilterLoading(true);
       try {
-        let q = query(collection(db, 'studentAttendance'));
+        let q = query(collection(null as any /* firebase removed */, 'studentAttendance'));
 
         // Build query constraints
         const constraints: any[] = [];
@@ -346,7 +348,7 @@ export const AttendanceHistory: React.FC = () => {
         }
 
         if (constraints.length > 0) {
-          q = query(collection(db, 'studentAttendance'), ...constraints);
+          q = query(collection(null as any /* firebase removed */, 'studentAttendance'), ...constraints);
         }
 
         const snapshot = await getDocs(q);
@@ -408,12 +410,33 @@ export const AttendanceHistory: React.FC = () => {
     setAuditLogs([]);
   };
 
+  const handleEditRecord = async (record: AttendanceRecord) => {
+    setSelectedRecord(record);
+    setEditRecordAfterLoadId(record.id);
+    await loadStudentAttendance(record.id);
+    setShowDetailModal(true);
+    setIsEditing(false);
+    setEditedAttendance([]);
+    setDetailTab('students');
+    setAuditLogs([]);
+  };
+
+  useEffect(() => {
+    if (!editRecordAfterLoadId || selectedRecord?.id !== editRecordAfterLoadId || studentAttendance.length === 0) {
+      return;
+    }
+
+    setIsEditing(true);
+    setEditedAttendance([...studentAttendance]);
+    setEditRecordAfterLoadId(null);
+  }, [editRecordAfterLoadId, selectedRecord, studentAttendance]);
+
   // Load audit logs for attendance record
   const loadAuditLogs = async (attendanceId: string) => {
     setLoadingLogs(true);
     try {
       const q = query(
-        collection(db, 'attendanceAuditLog'),
+        collection(null as any /* firebase removed */, 'attendanceAuditLog'),
         where('attendanceId', '==', attendanceId)
       );
       const snapshot = await getDocs(q);
@@ -535,7 +558,7 @@ export const AttendanceHistory: React.FC = () => {
         }
         
         // Update studentAttendance document
-        const docRef = doc(db, 'studentAttendance', docId);
+        const docRef = doc(null as any /* firebase removed */, 'studentAttendance', docId);
         await updateDoc(docRef, {
           status: change.status,
           updatedAt: new Date().toISOString(),
@@ -543,7 +566,7 @@ export const AttendanceHistory: React.FC = () => {
         });
         
         // Create audit log
-        await addDoc(collection(db, 'attendanceAuditLog'), {
+        await addDoc(collection(null as any /* firebase removed */, 'attendanceAuditLog'), {
           attendanceId: selectedRecord.id,
           studentAttendanceId: docId,
           studentId: change.studentId,
@@ -566,7 +589,7 @@ export const AttendanceHistory: React.FC = () => {
       ).length;
       const absent = editedAttendance.filter(s => s.status === AttendanceStatus.ABSENT).length;
       
-      const attendanceDocRef = doc(db, 'attendance', selectedRecord.id);
+      const attendanceDocRef = doc(null as any /* firebase removed */, 'attendance', selectedRecord.id);
       await updateDoc(attendanceDocRef, {
         present,
         absent,
@@ -640,6 +663,30 @@ export const AttendanceHistory: React.FC = () => {
       alert('Có lỗi khi xóa bản ghi. Vui lòng thử lại.');
     } finally {
       setDeletingOrphans(false);
+    }
+  };
+
+  const handleDeleteRecord = async (record: AttendanceRecord) => {
+    const className = record.className || 'lop nay';
+    const date = record.date || 'ngay nay';
+    if (!window.confirm(`Xoa dong diem danh cua "${className}" ngay ${date}?`)) {
+      return;
+    }
+
+    setDeletingRecordId(record.id);
+    try {
+      await deleteAttendance(record.id);
+      if (selectedRecord?.id === record.id) {
+        setShowDetailModal(false);
+        setSelectedRecord(null);
+        handleCancelEdit();
+      }
+      await refreshAttendance();
+    } catch (error) {
+      console.error('Error deleting attendance record:', error);
+      alert('Khong the xoa dong diem danh. Vui long thu lai.');
+    } finally {
+      setDeletingRecordId(null);
     }
   };
 
@@ -1170,18 +1217,43 @@ export const AttendanceHistory: React.FC = () => {
                     </span>
                   )}
                 </td>
-                <td className="px-6 py-4 text-right">
-                  {!showAsHoliday ? (
-                    <button
-                      onClick={() => handleViewDetail(record)}
-                      className="text-gray-500 hover:text-indigo-600 font-medium text-xs flex items-center gap-1 ml-auto"
-                    >
-                      <Eye size={14} />
-                      Xem chi tiết
-                    </button>
-                  ) : (
-                    <span className="text-gray-400 text-xs">{holidayName}</span>
-                  )}
+                <td className="px-6 py-4">
+                  <div className="flex justify-end gap-2">
+                    {!showAsHoliday ? (
+                      <>
+                        <button
+                          onClick={() => handleViewDetail(record)}
+                          className="text-gray-500 hover:text-indigo-600 font-medium text-xs inline-flex items-center gap-1"
+                        >
+                          <Eye size={14} />
+                          Xem
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleEditRecord(record)}
+                          className="text-amber-600 hover:text-amber-700 font-medium text-xs inline-flex items-center gap-1"
+                          title="Sua dong diem danh"
+                        >
+                          <Edit3 size={14} />
+                          Sua
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-gray-400 text-xs">{holidayName}</span>
+                    )}
+                    {canDeleteAttendanceHistory && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteRecord(record)}
+                        disabled={deletingRecordId === record.id}
+                        className="text-red-500 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1 text-xs font-medium"
+                        title="Xoa dong diem danh"
+                      >
+                        <Trash2 size={14} />
+                        {deletingRecordId === record.id ? 'Dang xoa...' : 'Xoa'}
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             );

@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Test Comment Template Modal
  *
@@ -7,8 +8,6 @@
 
 import React, { useState } from 'react';
 import { X, Save } from 'lucide-react';
-import { collection, addDoc, updateDoc, doc } from 'firebase/firestore';
-import { db } from '../../../config/firebase';
 import { TestTemplate, SkillContent } from '../../../../types';
 import { ModalPortal } from '@/components/modal-portal';
 
@@ -58,10 +57,10 @@ export const TestCommentTemplateModal: React.FC<TestCommentTemplateModalProps> =
 
       if (existingTemplate?.id) {
         // Update existing
-        await updateDoc(doc(db, 'testTemplates', existingTemplate.id), templateData);
+        await updateDoc(doc(null as any /* firebase removed */, 'testTemplates', existingTemplate.id), templateData);
       } else {
         // Create new
-        await addDoc(collection(db, 'testTemplates'), {
+        await addDoc(collection(null as any /* firebase removed */, 'testTemplates'), {
           ...templateData,
           createdAt: new Date().toISOString(),
         });

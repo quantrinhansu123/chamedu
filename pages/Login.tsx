@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock, Mail, AlertCircle, ArrowRight, BookOpen } from 'lucide-react';
 import { useAuth } from '../src/hooks/useAuth';
+import brandLogo from './Logo tách nền.png';
 
 const REMEMBER_ME_KEY = 'brisky_remember_email';
 
@@ -47,9 +48,12 @@ export const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex">
+    <div
+      className="min-h-screen flex login-page"
+      style={{ fontFamily: "'Times New Roman', Times, serif" }}
+    >
       {/* Left Panel - Brand & Visual */}
-      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-[#FF6B5A] via-[#FF8575] to-[#FFA590] relative overflow-hidden">
+      <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-[#F8D548] via-[#F7B500] to-[#F08A24] relative overflow-hidden">
         {/* Decorative Background Pattern */}
         <svg className="absolute inset-0 w-full h-full opacity-10" xmlns="http://www.w3.org/2000/svg">
           <defs>
@@ -69,7 +73,7 @@ export const Login: React.FC = () => {
             <BookOpen size={80} strokeWidth={1} />
           </div>
           <div className="absolute top-1/2 left-1/4 text-white/10">
-            <span className="text-9xl font-serif" style={{ fontFamily: "'Playfair Display', serif" }}>A</span>
+            <span className="text-9xl font-bold">A</span>
           </div>
         </div>
 
@@ -77,23 +81,20 @@ export const Login: React.FC = () => {
         <div className="relative z-10 flex flex-col justify-center px-16 py-20">
           <div className="space-y-8">
             <div className="inline-block">
-              <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-8 border-2 border-white/20">
+              <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-2 border-2 border-white/20">
                 <img 
-                  src="/logo.jpg" 
-                  alt="Brisky Logo" 
-                  className="w-48 h-48 object-contain drop-shadow-2xl"
+                  src={brandLogo}
+                  alt="Chăm edu Logo" 
+                  className="w-[42rem] h-[42rem] max-w-[49vw] max-h-[68vh] object-contain drop-shadow-2xl"
                 />
               </div>
             </div>
             
             <div className="space-y-4">
-              <h1 className="text-6xl font-bold text-white leading-tight" style={{ fontFamily: "'Playfair Display', serif" }}>
-                Brisky<br />English
+              <h1 className="text-6xl font-bold text-white leading-tight">
+                Chăm edu
               </h1>
               <div className="w-24 h-1 bg-white/80"></div>
-              <p className="text-xl text-white/90 font-light max-w-md leading-relaxed">
-                Hệ thống quản lý toàn diện cho trung tâm Anh ngữ hiện đại
-              </p>
             </div>
           </div>
         </div>
@@ -103,13 +104,13 @@ export const Login: React.FC = () => {
       </div>
 
       {/* Right Panel - Login Form */}
-      <div className="flex-1 bg-[#FFF8F0] relative overflow-hidden">
+      <div className="flex-1 bg-[#FFFBF0] relative overflow-hidden">
         {/* Subtle Background Texture */}
         <div className="absolute inset-0 opacity-30">
           <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
             <defs>
               <pattern id="dots" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
-                <circle cx="2" cy="2" r="1" fill="#FF6B5A" opacity="0.1"/>
+                <circle cx="2" cy="2" r="1" fill="#A95A00" opacity="0.12"/>
               </pattern>
             </defs>
             <rect width="100%" height="100%" fill="url(#dots)"/>
@@ -121,18 +122,18 @@ export const Login: React.FC = () => {
             {/* Mobile Logo */}
             <div className="lg:hidden text-center mb-12">
               <img 
-                src="/logo.jpg" 
-                alt="Brisky Logo" 
-                className="w-32 h-32 mx-auto object-contain mb-4"
+                src={brandLogo}
+                alt="Chăm edu Logo" 
+                className="w-80 h-80 max-w-[85vw] max-h-[45vh] mx-auto object-contain mb-4"
               />
-              <h1 className="text-4xl font-bold text-[#1A1F3A]" style={{ fontFamily: "'Playfair Display', serif" }}>
-                Brisky English
+              <h1 className="text-4xl font-bold text-[#5A3416]">
+                Chăm edu
               </h1>
             </div>
 
             {/* Form Header */}
             <div className="space-y-3">
-              <h2 className="text-4xl font-bold text-[#1A1F3A]" style={{ fontFamily: "'Playfair Display', serif" }}>
+              <h2 className="text-4xl font-bold text-[#5A3416]">
                 Đăng nhập
               </h2>
               <p className="text-gray-600">Truy cập vào hệ thống quản lý của bạn</p>
@@ -156,7 +157,7 @@ export const Login: React.FC = () => {
                   htmlFor="email" 
                   className={`absolute left-4 transition-all duration-300 pointer-events-none z-10 ${
                     emailFocused || email 
-                      ? '-top-2.5 text-xs bg-[#FFF8F0] px-2 text-[#FF6B5A] font-semibold' 
+                      ? '-top-2.5 text-xs bg-[#FFFBF0] px-2 text-[#A95A00] font-semibold' 
                       : 'top-4 text-base text-gray-500'
                   }`}
                 >
@@ -170,14 +171,14 @@ export const Login: React.FC = () => {
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setEmailFocused(true)}
                     onBlur={() => setEmailFocused(false)}
-                    className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-lg focus:outline-none focus:border-[#FF6B5A] transition-all text-gray-900 shadow-sm hover:border-gray-300"
+                    className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-lg focus:outline-none focus:border-[#F7B500] transition-all text-gray-900 shadow-sm hover:border-gray-300"
                     required
                     autoComplete="email"
                   />
                   <Mail 
                     size={20} 
                     className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${
-                      emailFocused ? 'text-[#FF6B5A]' : 'text-gray-400'
+                      emailFocused ? 'text-[#A95A00]' : 'text-gray-400'
                     }`}
                   />
                 </div>
@@ -189,7 +190,7 @@ export const Login: React.FC = () => {
                   htmlFor="password" 
                   className={`absolute left-4 transition-all duration-300 pointer-events-none z-10 ${
                     passwordFocused || password 
-                      ? '-top-2.5 text-xs bg-[#FFF8F0] px-2 text-[#FF6B5A] font-semibold' 
+                      ? '-top-2.5 text-xs bg-[#FFFBF0] px-2 text-[#A95A00] font-semibold' 
                       : 'top-4 text-base text-gray-500'
                   }`}
                 >
@@ -203,14 +204,14 @@ export const Login: React.FC = () => {
                     onChange={(e) => setPassword(e.target.value)}
                     onFocus={() => setPasswordFocused(true)}
                     onBlur={() => setPasswordFocused(false)}
-                    className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-lg focus:outline-none focus:border-[#FF6B5A] transition-all text-gray-900 shadow-sm hover:border-gray-300"
+                    className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-lg focus:outline-none focus:border-[#F7B500] transition-all text-gray-900 shadow-sm hover:border-gray-300"
                     required
                     autoComplete="current-password"
                   />
                   <Lock 
                     size={20} 
                     className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${
-                      passwordFocused ? 'text-[#FF6B5A]' : 'text-gray-400'
+                      passwordFocused ? 'text-[#A95A00]' : 'text-gray-400'
                     }`}
                   />
                 </div>
@@ -223,7 +224,7 @@ export const Login: React.FC = () => {
                     type="checkbox"
                     checked={rememberMe}
                     onChange={(e) => setRememberMe(e.target.checked)}
-                    className="w-4 h-4 text-[#FF6B5A] border-gray-300 rounded focus:ring-[#FF6B5A] cursor-pointer accent-[#FF6B5A]"
+                    className="w-4 h-4 text-[#F7B500] border-gray-300 rounded focus:ring-[#F7B500] cursor-pointer accent-[#F7B500]"
                   />
                   <span className="text-gray-700 group-hover:text-[#1A1F3A] transition-colors">
                     Ghi nhớ tôi
@@ -231,10 +232,10 @@ export const Login: React.FC = () => {
                 </label>
                 <a 
                   href="#" 
-                  className="text-[#FF6B5A] hover:text-[#FF8575] font-medium transition-colors relative group"
+                  className="text-[#A95A00] hover:text-[#F08A24] font-medium transition-colors relative group"
                 >
                   Quên mật khẩu?
-                  <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-[#FF6B5A] group-hover:w-full transition-all duration-300"></span>
+                  <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-[#A95A00] group-hover:w-full transition-all duration-300"></span>
                 </a>
               </div>
 
@@ -242,7 +243,7 @@ export const Login: React.FC = () => {
               <button
                 type="submit"
                 disabled={isLoading || !email || !password}
-                className="group relative w-full bg-[#FF6B5A] text-white py-4 px-6 rounded-lg font-semibold text-base hover:bg-[#FF8575] focus:outline-none focus:ring-4 focus:ring-[#FF6B5A]/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl disabled:hover:bg-[#FF6B5A] overflow-hidden"
+                className="group relative w-full bg-gradient-to-r from-[#F7B500] to-[#F08A24] text-white py-4 px-6 rounded-lg font-semibold text-base hover:from-[#E2A600] hover:to-[#DD7B15] focus:outline-none focus:ring-4 focus:ring-[#F7B500]/30 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg hover:shadow-xl disabled:hover:from-[#F7B500] disabled:hover:to-[#F08A24] overflow-hidden"
               >
                 <span className="relative flex items-center justify-center gap-3">
                   {isLoading ? (
@@ -267,7 +268,7 @@ export const Login: React.FC = () => {
             {/* Footer */}
             <div className="pt-8 text-center">
               <p className="text-sm text-gray-500">
-                © 2025 Brisky English
+                © 2025 Chăm edu
               </p>
             </div>
           </div>
@@ -275,7 +276,16 @@ export const Login: React.FC = () => {
       </div>
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&display=swap');
+        .login-page,
+        .login-page input,
+        .login-page button,
+        .login-page label,
+        .login-page a,
+        .login-page p,
+        .login-page h1,
+        .login-page h2 {
+          font-family: 'Times New Roman', Times, serif;
+        }
 
         @keyframes fade-up {
           from {

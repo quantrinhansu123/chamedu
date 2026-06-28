@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Printer, ChevronLeft, ChevronRight, Plus, X, MapPin, Users, User, BookOpen, Clock, Home, ChevronUp, Calendar, GraduationCap, CheckCircle, Umbrella, Palette, Check, RotateCcw, Search } from 'lucide-react';
+import { Printer, ChevronLeft, ChevronRight, Plus, X, MapPin, Users, User, BookOpen, Clock, Home, ChevronUp, Calendar, GraduationCap, CheckCircle, Umbrella, Palette, Check, RotateCcw, Search, BarChart3, DollarSign, TrendingUp } from 'lucide-react';
 import { useClasses } from '../src/hooks/useClasses';
 import { useStudents } from '../src/hooks/useStudents';
 import { usePermissions } from '../src/hooks/usePermissions';
@@ -7,12 +7,15 @@ import { useAuth } from '../src/hooks/useAuth';
 import { useHolidays } from '../src/hooks/useHolidays';
 import { useRooms } from '../src/hooks/useRooms';
 import { useStaff } from '../src/hooks/useStaff';
-import { ClassModel, Student, Holiday } from '../types';
-import { collection, getDocs, query, where, doc, updateDoc } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
+import { ClassModel, Student, Holiday, AttendanceRecord } from '../types';
 import { getScheduleTime, getScheduleDays, formatSchedule } from '../src/utils/scheduleUtils';
 import { isAssistantRole, isTeacherRole } from '../src/utils/roleUtils';
 import { ModalPortal } from '@/components/modal-portal';
+import { getCenters } from '../src/services/centerService';
+import { getAttendanceRecords } from '../src/services/attendanceService';
+import { ClassService } from '../src/services/classService';
+import { getSessionsByClass } from '../src/services/sessionService';
+import { formatCurrency } from '../src/utils/currencyUtils';
 
 // ============================================
 // CLASS COLOR PALETTE SYSTEM
@@ -42,6 +45,14 @@ const CLASS_COLOR_PALETTE = [
   { bg: 'bg-slate-50', border: 'border-l-slate-400', accent: 'bg-slate-400', ring: 'ring-slate-200', text: 'text-slate-700', gradient: 'from-slate-50 to-slate-100/50' },
 ];
 
+const ALL_BRANCHES_VALUE = '__ALL_BRANCHES__';
+const ALL_BRANCHES_OPTION = {
+  id: ALL_BRANCHES_VALUE,
+  name: 'Tất cả cơ sở',
+  color: 'bg-slate-500',
+  textColor: 'text-slate-700',
+};
+
 // Hash function để gán màu consistent cho mỗi lớp (fallback khi chưa chọn màu)
 const hashClassName = (className: string): number => {
   let hash = 0;
@@ -68,7 +79,7 @@ const getClassColor = (cls: { name?: string; id?: string; color?: number }): typ
 export { CLASS_COLOR_PALETTE, hashClassName };
 
 export const Schedule: React.FC = () => {
-  const [selectedBranch, setSelectedBranch] = useState('');
+  const [selectedBranch, setSelectedBranch] = useState(ALL_BRANCHES_VALUE);
   const [centerList, setCenterList] = useState<{ id: string; name: string }[]>([]);
   const [filterTeacher, setFilterTeacher] = useState<string>('ALL');
   const [filterAssistant, setFilterAssistant] = useState<string>('ALL');
@@ -79,6 +90,7 @@ export const Schedule: React.FC = () => {
   const [detailModalClass, setDetailModalClass] = useState<ClassModel | null>(null);
   const [savingColorId, setSavingColorId] = useState<string | null>(null);
   const [showColorPicker, setShowColorPicker] = useState<string | null>(null);
+  const [monthlyAttendanceRecords, setMonthlyAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [currentWeekStart, setCurrentWeekStart] = useState(() => {
     const today = new Date();
     const day = today.getDay();
@@ -106,9 +118,9 @@ export const Schedule: React.FC = () => {
   const handleColorChange = async (classId: string, colorIndex: number | undefined) => {
     setSavingColorId(classId);
     try {
-      await updateDoc(doc(db, 'classes', classId), {
+      await ClassService.updateClass(classId, {
         color: colorIndex ?? null // null = auto (hash-based)
-      });
+      } as Partial<ClassModel>);
       setShowColorPicker(null);
     } catch (error) {
       console.error('Error updating class color:', error);
@@ -123,6 +135,32 @@ export const Schedule: React.FC = () => {
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
+  };
+
+  const normalizeDateOnly = (value?: string | null): string => {
+    if (!value) return '';
+    return value.length >= 10 ? value.slice(0, 10) : value;
+  };
+
+  const isClassActiveOnDate = (cls: ClassModel, dateStr: string): boolean => {
+    const startDate = normalizeDateOnly(cls.startDate);
+    const endDate = normalizeDateOnly(cls.endDate);
+    if (startDate && dateStr < startDate) return false;
+    if (endDate && dateStr > endDate) return false;
+    return true;
+  };
+
+  const normalizeClassStatusForCompare = (status?: string) =>
+    (status || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .trim();
+
+  const isStudyingClass = (cls: ClassModel) => {
+    const status = normalizeClassStatusForCompare(cls.status);
+    return status === 'dang hoc' || status === 'active' || status === 'studying';
   };
 
   // Check if a date falls within any active holiday
@@ -251,7 +289,7 @@ export const Schedule: React.FC = () => {
     }
     
     // Filter by branch/center
-    if (selectedBranch) {
+    if (selectedBranch !== ALL_BRANCHES_VALUE) {
       filtered = filtered.filter(cls => cls.branch === selectedBranch);
     }
 
@@ -268,22 +306,14 @@ export const Schedule: React.FC = () => {
     return filtered;
   }, [allClasses, onlyOwnClasses, staffData, staffId, filterTeacher, filterAssistant, filterRoom, selectedBranch, searchTerm]);
 
-  // Fetch centers from Firestore
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
-        const centers = centersSnap.docs
-          .filter(d => d.data().status === 'Active')
-          .map(d => ({
-            id: d.id,
-            name: d.data().name || '',
-          }));
+        const data = await getCenters();
+        const centers = data
+          .filter((c) => c.status === 'Active')
+          .map((c) => ({ id: c.id!, name: c.name }));
         setCenterList(centers);
-        // Set default selected branch to first center
-        if (centers.length > 0 && !selectedBranch) {
-          setSelectedBranch(centers[0].name);
-        }
       } catch (err) {
         console.error('Error fetching centers:', err);
       }
@@ -299,7 +329,8 @@ export const Schedule: React.FC = () => {
     color: branchColors[idx % branchColors.length],
     textColor: `text-${branchColors[idx % branchColors.length].replace('bg-', '').replace('-500', '')}-700`
   }));
-  const selectedBranchData = branches.find(b => b.id === selectedBranch) || branches[0];
+  const branchOptions = [ALL_BRANCHES_OPTION, ...branches];
+  const selectedBranchData = branchOptions.find(b => b.id === selectedBranch) || ALL_BRANCHES_OPTION;
 
   // Format week display (Monday to Sunday)
   const weekDisplay = useMemo(() => {
@@ -328,9 +359,13 @@ export const Schedule: React.FC = () => {
     if (!schedule) return [];
     
     const days: number[] = [];
+    const normalizedSchedule = schedule
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
     
     // Handle "Chủ nhật" or "CN" -> 8 (Sunday)
-    if (/ch[uủ]\s*nh[aậ]t/i.test(schedule)) {
+    if (/(^|[^a-z])cn([^a-z]|$)|chu\s*nhat|sunday/.test(normalizedSchedule)) {
       days.push(8);
     }
     
@@ -390,7 +425,58 @@ export const Schedule: React.FC = () => {
     return 'evening'; // default
   };
 
-  // Group classes by day AND time period (exclude ended classes)
+  const dayNumberToName: Record<number, string> = {
+    2: 'Thứ 2',
+    3: 'Thứ 3',
+    4: 'Thứ 4',
+    5: 'Thứ 5',
+    6: 'Thứ 6',
+    7: 'Thứ 7',
+    8: 'CN',
+  };
+
+  const getDayNumberFromDetail = (dayOfWeek?: string, dayLabel?: string): number | null => {
+    const raw = `${dayOfWeek || ''} ${dayLabel || ''}`;
+    const normalizedRaw = raw
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    if (/(^|[^a-z])cn([^a-z]|$)|chu\s*nhat|sunday/.test(normalizedRaw)) return 8;
+    if (/^0$|^8$/.test(normalizedRaw)) return 8;
+    const match = raw.match(/[2-7]/);
+    return match ? parseInt(match[0], 10) : null;
+  };
+
+  const getScheduleEntriesForGrid = (cls: ClassModel): ClassModel[] => {
+    if (!cls.scheduleDetails?.length) return [cls];
+
+    return cls.scheduleDetails
+      .map((detail) => {
+        const dayNumber = getDayNumberFromDetail(detail.dayOfWeek, detail.dayLabel);
+        if (!dayNumber) return null;
+
+        const dayName = dayNumberToName[dayNumber] || detail.dayLabel || '';
+        const startTime = detail.startTime || detail.teacherStartTime || detail.assistantStartTime || detail.foreignTeacherStartTime || '';
+        const endTime = detail.endTime || detail.teacherEndTime || detail.assistantEndTime || detail.foreignTeacherEndTime || '';
+        const schedule = startTime && endTime ? `${startTime}-${endTime} ${dayName}` : dayName;
+
+        return {
+          ...cls,
+          schedule,
+          room: detail.room || cls.room,
+          teacher: detail.teacher || cls.teacher,
+          teacherId: detail.teacherId || cls.teacherId,
+          assistant: detail.assistant || cls.assistant,
+          assistantId: detail.assistantId || cls.assistantId,
+          foreignTeacher: detail.foreignTeacher || cls.foreignTeacher,
+          foreignTeacherId: detail.foreignTeacherId || cls.foreignTeacherId,
+        } as ClassModel;
+      })
+      .filter((entry): entry is ClassModel => Boolean(entry));
+  };
+
+  // Group studying classes by day AND time period
   const scheduleByDayAndPeriod = useMemo(() => {
     const result: Record<string, Record<string, ClassModel[]>> = {};
     
@@ -401,24 +487,384 @@ export const Schedule: React.FC = () => {
       });
     });
 
-    days.forEach(day => {
+    days.forEach((day) => {
       const dayNumber = dayNameToNumber[day];
       classes.forEach(cls => {
-        // Skip ended/inactive classes
-        const status = (cls.status || '').toLowerCase();
-        if (status === 'ended' || status === 'kết thúc' || status === 'inactive' || status === 'đã kết thúc') {
+        if (!isStudyingClass(cls)) {
           return;
         }
-        const scheduleDays = parseDaysFromSchedule(cls.schedule || '');
-        if (scheduleDays.includes(dayNumber)) {
-          const period = getTimePeriod(cls.schedule || '');
-          result[period][day].push(cls);
-        }
+        getScheduleEntriesForGrid(cls).forEach(scheduleEntry => {
+          const scheduleDays = parseDaysFromSchedule(scheduleEntry.schedule || '');
+          if (scheduleDays.includes(dayNumber)) {
+            const period = getTimePeriod(scheduleEntry.schedule || '');
+            result[period][day].push(scheduleEntry);
+          }
+        });
       });
     });
     
     return result;
-  }, [classes]);
+  }, [classes, currentWeekStart]);
+
+  const selectedMonthDate = useMemo(() => new Date(currentWeekStart), [currentWeekStart]);
+
+  const getMonthRange = (date: Date) => {
+    const start = new Date(date.getFullYear(), date.getMonth(), 1);
+    const end = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    return { start, end };
+  };
+
+  const getMonthLabel = (date: Date) => `Tháng ${date.getMonth() + 1}/${date.getFullYear()}`;
+
+  useEffect(() => {
+    let isMounted = true;
+    const start = new Date(selectedMonthDate.getFullYear(), selectedMonthDate.getMonth() - 5, 1);
+    const end = new Date(selectedMonthDate.getFullYear(), selectedMonthDate.getMonth() + 1, 0);
+
+    getAttendanceRecords({
+      startDate: formatDateLocal(start),
+      endDate: formatDateLocal(end),
+    })
+      .then((records) => {
+        if (isMounted) setMonthlyAttendanceRecords(records);
+      })
+      .catch((error) => {
+        console.error('Error loading monthly attendance revenue:', error);
+        if (isMounted) setMonthlyAttendanceRecords([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMonthDate]);
+
+  const toMinutes = (time?: string) => {
+    if (!time) return null;
+    const match = time.match(/(\d{1,2})[:h](\d{2})/i);
+    if (!match) return null;
+    return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+  };
+
+  const getDurationHours = (start?: string, end?: string, fallbackMinutes?: number) => {
+    if (fallbackMinutes && fallbackMinutes > 0) return fallbackMinutes / 60;
+    const startMinutes = toMinutes(start);
+    const endMinutes = toMinutes(end);
+    if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) return 0;
+    return (endMinutes - startMinutes) / 60;
+  };
+
+  const getScheduleTimeRange = (schedule?: string) => {
+    const match = schedule?.match(/(\d{1,2}[:h]\d{2})\s*-\s*(\d{1,2}[:h]\d{2})/i);
+    return match ? { start: match[1], end: match[2] } : { start: undefined, end: undefined };
+  };
+
+  const shouldCountClassInEstimates = (cls: ClassModel) => {
+    const normalizedStatus = normalizeClassStatusForCompare(cls.status);
+
+    return ![
+      'tam dung',
+      'paused',
+      'inactive',
+      'ket thuc',
+      'da ket thuc',
+      'ended',
+      'finished',
+      'completed',
+    ].includes(normalizedStatus);
+  };
+
+  const isClassScheduledInMonthlyEstimate = (cls: ClassModel, date: Date) => {
+    if (!shouldCountClassInEstimates(cls)) return false;
+    return getHolidayForDate(date, cls.id, cls.branch) === null;
+  };
+
+  const normalizeForCompare = (value?: string) =>
+    (value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .trim();
+
+  const parseMoneyValue = (value: unknown) => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    if (typeof value !== 'string') return 0;
+    const digits = value.replace(/[^\d]/g, '');
+    const parsed = Number(digits);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const getEffectiveTotalSessions = (cls: ClassModel) => {
+    const totalSessions = Number(cls.totalSessions) || 0;
+    if (totalSessions > 0) return totalSessions;
+
+    const progressTotal = (cls.progress || '').match(/\/\s*(\d+)/);
+    return progressTotal ? Number(progressTotal[1]) || 0 : 0;
+  };
+
+  const isRevenueStudentStatus = (status?: string) => {
+    const normalized = normalizeForCompare(status);
+    if (!normalized) return true;
+    return ![
+      'inactive',
+      'nghi hoc',
+      'tam dung',
+      'bao luu',
+      'reserved',
+      'trial',
+      'hoc thu',
+      'ended',
+      'ket thuc',
+      'da ket thuc',
+    ].includes(normalized);
+  };
+
+  const getClassStudentCount = (cls: ClassModel) => {
+    const studentIds = (cls as ClassModel & { studentIds?: string[] }).studentIds || [];
+    if (studentIds.length > 0) return studentIds.length;
+
+    const matchedStudents = allStudents.filter(student => {
+      const inClass =
+        student.classId === cls.id ||
+        student.class === cls.name ||
+        student.className === cls.name ||
+        student.classIds?.includes(cls.id);
+      if (!inClass) return false;
+      return isRevenueStudentStatus(student.status);
+    });
+    return matchedStudents.length || cls.activeStudents || cls.studentsCount || 0;
+  };
+
+  const getClassRevenueEstimate = (cls: ClassModel, sessionCount = 1) => {
+    const canEstimateRevenue = shouldCountClassInEstimates(cls);
+    const studentCount = getClassStudentCount(cls);
+    const tuitionFee = parseMoneyValue(cls.tuitionFee);
+    const totalSessions = getEffectiveTotalSessions(cls);
+    const pricePerSession = tuitionFee;
+
+    return {
+      canEstimateRevenue,
+      studentCount,
+      tuitionFee,
+      totalSessions,
+      pricePerSession,
+      revenuePerSession: canEstimateRevenue ? pricePerSession * studentCount : 0,
+      estimatedRevenue: canEstimateRevenue ? pricePerSession * studentCount * sessionCount : 0,
+      hasTuitionData: tuitionFee > 0,
+    };
+  };
+
+  const parseClassCreatedDate = (cls: ClassModel) => {
+    const classWithDates = cls as ClassModel & { createdAt?: string; createdDate?: string };
+    const rawDate = classWithDates.createdDate || classWithDates.createdAt;
+    if (!rawDate) return null;
+
+    const dateOnly = rawDate.includes('T') ? rawDate.split('T')[0] : rawDate;
+    const normalizedDate = dateOnly.includes('/')
+      ? dateOnly.split('/').reverse().join('-')
+      : dateOnly;
+    const parsedDate = new Date(`${normalizedDate}T00:00:00`);
+
+    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+  };
+
+  const isSameMonth = (firstDate: Date, secondDate: Date) =>
+    firstDate.getFullYear() === secondDate.getFullYear() && firstDate.getMonth() === secondDate.getMonth();
+
+  const isClassCreatedByMonth = (cls: ClassModel, monthDate: Date) => {
+    const createdDate = parseClassCreatedDate(cls);
+    if (!createdDate) return true;
+
+    const classCreatedMonth = new Date(createdDate.getFullYear(), createdDate.getMonth(), 1);
+    const estimateMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+    return estimateMonth >= classCreatedMonth;
+  };
+
+  const getClassDayEntries = (cls: ClassModel) => {
+    const parseDayNumber = (dayOfWeek?: string, dayLabel?: string) => {
+      const raw = `${dayOfWeek || ''} ${dayLabel || ''}`;
+      const normalizedRaw = raw
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+      if (/(^|[^a-z])cn([^a-z]|$)|chu\s*nhat|sunday/.test(normalizedRaw)) return 8;
+      if (/^0$|^8$/.test(normalizedRaw)) return 8;
+      const match = raw.match(/\d/);
+      return match ? parseInt(match[0], 10) : NaN;
+    };
+
+    if (cls.scheduleDetails?.length) {
+      return cls.scheduleDetails.map(detail => ({
+        dayNumber: parseDayNumber(detail.dayOfWeek, detail.dayLabel),
+        teacherHours: getDurationHours(detail.teacherStartTime || detail.startTime, detail.teacherEndTime || detail.endTime, detail.teacherDuration),
+        assistantHours: getDurationHours(detail.assistantStartTime || detail.startTime, detail.assistantEndTime || detail.endTime, detail.assistantDuration),
+        foreignTeacherHours: getDurationHours(detail.foreignTeacherStartTime || detail.startTime, detail.foreignTeacherEndTime || detail.endTime, detail.foreignTeacherDuration),
+      })).filter(entry => entry.dayNumber >= 2 && entry.dayNumber <= 8);
+    }
+
+    const range = getScheduleTimeRange(cls.schedule);
+    const defaultHours = getDurationHours(range.start, range.end) || 1.5;
+    return parseDaysFromSchedule(cls.schedule || '').map(dayNumber => ({
+      dayNumber,
+      teacherHours: cls.teacherDuration ? cls.teacherDuration / 60 : defaultHours,
+      assistantHours: cls.assistant ? (cls.assistantDuration ? cls.assistantDuration / 60 : defaultHours) : 0,
+      foreignTeacherHours: cls.foreignTeacher ? (cls.foreignTeacherDuration ? cls.foreignTeacherDuration / 60 : defaultHours) : 0,
+    }));
+  };
+
+  const getClassMonthlySessionCount = (cls: ClassModel, monthDate: Date) => {
+    if (!shouldCountClassInEstimates(cls) || !isClassCreatedByMonth(cls, monthDate)) return 0;
+
+    const entries = getClassDayEntries(cls);
+    if (!entries.length) return 0;
+
+    const { start, end } = getMonthRange(monthDate);
+    let sessionCount = 0;
+
+    for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+      if (!isClassScheduledInMonthlyEstimate(cls, date)) continue;
+      const dayNumber = date.getDay() === 0 ? 8 : date.getDay() + 1;
+      sessionCount += entries.filter(entry => entry.dayNumber === dayNumber).length;
+    }
+
+    return sessionCount;
+  };
+
+  const getMonthlyEstimate = (monthDate: Date) => {
+    const { start, end } = getMonthRange(monthDate);
+    const teacherMap = new Map<string, { name: string; hours: number; sessions: number; classes: Set<string>; dates: Set<string> }>();
+    const classRevenueMap = new Map<string, { id: string; name: string; studentCount: number; sessionCount: number; revenue: number; pricePerSession: number; tuitionFee: number; totalSessions: number; actualSessions: number; actualStudentCount: number; absentCount: number; actualRevenue: number }>();
+    let totalSessions = 0;
+    let totalRevenue = 0;
+    let totalActualRevenue = 0;
+
+    classes.forEach(cls => {
+      if (!isClassCreatedByMonth(cls, monthDate)) return;
+
+      const entries = getClassDayEntries(cls);
+      if (!entries.length) return;
+      const revenueEstimate = getClassRevenueEstimate(cls);
+
+      for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+        if (!isClassScheduledInMonthlyEstimate(cls, date)) continue;
+        const dayNumber = date.getDay() === 0 ? 8 : date.getDay() + 1;
+        const matchedEntries = entries.filter(entry => entry.dayNumber === dayNumber);
+        if (!matchedEntries.length) continue;
+
+        matchedEntries.forEach(entry => {
+          totalSessions += 1;
+          const expectedRevenue = revenueEstimate.revenuePerSession;
+
+          if (revenueEstimate.canEstimateRevenue && revenueEstimate.hasTuitionData && revenueEstimate.studentCount > 0) {
+            const currentRevenue = classRevenueMap.get(cls.id) || {
+              id: cls.id,
+              name: cls.name,
+              studentCount: revenueEstimate.studentCount,
+              sessionCount: 0,
+              revenue: 0,
+              pricePerSession: revenueEstimate.pricePerSession,
+              tuitionFee: revenueEstimate.tuitionFee,
+              totalSessions: revenueEstimate.totalSessions,
+              actualSessions: 0,
+              actualStudentCount: 0,
+              absentCount: 0,
+              actualRevenue: 0,
+            };
+            currentRevenue.sessionCount += 1;
+            currentRevenue.revenue += expectedRevenue;
+            classRevenueMap.set(cls.id, currentRevenue);
+            totalRevenue += expectedRevenue;
+          }
+
+          const addTeacher = (name: string | undefined, hours: number) => {
+            if (!name || hours <= 0) return;
+            const current = teacherMap.get(name) || { name, hours: 0, sessions: 0, classes: new Set<string>(), dates: new Set<string>() };
+            current.hours += hours;
+            current.sessions += 1;
+            current.classes.add(cls.name);
+            current.dates.add(formatDateLocal(date));
+            teacherMap.set(name, current);
+          };
+
+          addTeacher(cls.teacher, entry.teacherHours);
+          addTeacher(cls.assistant, entry.assistantHours);
+          addTeacher(cls.foreignTeacher, entry.foreignTeacherHours);
+        });
+      }
+    });
+
+    monthlyAttendanceRecords.forEach(record => {
+      if (!record.classId) return;
+      if (!record.date || record.date < formatDateLocal(start) || record.date > formatDateLocal(end)) return;
+      const matchedClass = classes.find(cls => cls.id === record.classId);
+      if (!matchedClass) return;
+
+      const revenueEstimate = getClassRevenueEstimate(matchedClass);
+      if (!revenueEstimate.hasTuitionData) return;
+
+      const attendedCount = (Number(record.present) || 0) + (Number(record.tutored) || 0);
+      const absentCount = Number(record.absent) || 0;
+      const reservedCount = Number(record.reserved) || 0;
+      if (attendedCount + absentCount + reservedCount <= 0) return;
+
+      const actualRevenue = attendedCount * revenueEstimate.pricePerSession;
+      const current = classRevenueMap.get(matchedClass.id) || {
+        id: matchedClass.id,
+        name: matchedClass.name,
+        studentCount: revenueEstimate.studentCount,
+        sessionCount: 0,
+        revenue: 0,
+        pricePerSession: revenueEstimate.pricePerSession,
+        tuitionFee: revenueEstimate.tuitionFee,
+        totalSessions: revenueEstimate.totalSessions,
+        actualSessions: 0,
+        actualStudentCount: 0,
+        absentCount: 0,
+        actualRevenue: 0,
+      };
+      current.actualSessions += 1;
+      current.actualStudentCount += attendedCount;
+      current.absentCount += absentCount;
+      current.actualRevenue += actualRevenue;
+      classRevenueMap.set(matchedClass.id, current);
+      totalActualRevenue += actualRevenue;
+      });
+
+    return {
+      monthLabel: getMonthLabel(monthDate),
+      totalSessions,
+      totalRevenue,
+      totalActualRevenue,
+      teacherStats: Array.from(teacherMap.values())
+        .map(item => ({
+          ...item,
+          classCount: item.classes.size,
+          teachingDays: item.dates.size,
+          averageHoursPerDay: item.dates.size > 0 ? item.hours / item.dates.size : 0,
+        }))
+        .sort((a, b) => b.hours - a.hours),
+      classRevenueStats: Array.from(classRevenueMap.values()).sort(
+        (a, b) => (b.revenue + b.actualRevenue) - (a.revenue + a.actualRevenue)
+      ),
+    };
+  };
+
+  const monthlyStats = useMemo(() => getMonthlyEstimate(selectedMonthDate), [classes, allStudents, monthlyAttendanceRecords, selectedMonthDate, activeHolidays]);
+
+  const revenueGrowthData = useMemo(() => {
+    return Array.from({ length: 6 }, (_, index) => {
+      const date = new Date(selectedMonthDate.getFullYear(), selectedMonthDate.getMonth() - 5 + index, 1);
+      const estimate = getMonthlyEstimate(date);
+      return {
+        month: `T${date.getMonth() + 1}`,
+        amount: estimate.totalRevenue,
+        actual: estimate.totalActualRevenue,
+      };
+    });
+  }, [classes, allStudents, monthlyAttendanceRecords, selectedMonthDate, activeHolidays]);
+
+  const maxRevenue = Math.max(...revenueGrowthData.flatMap(item => [item.amount, item.actual]), 1);
 
   const handlePrint = () => {
     window.print();
@@ -467,7 +913,7 @@ export const Schedule: React.FC = () => {
               className="bg-white text-gray-800 border-0 rounded-md px-3 py-1.5 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-white/50 cursor-pointer"
             >
               {branches.length === 0 && <option value="">-- Chưa có cơ sở --</option>}
-              {branches.map(b => (
+              {branchOptions.map(b => (
                 <option key={b.id} value={b.id}>● {b.name}</option>
               ))}
             </select>
@@ -574,7 +1020,7 @@ export const Schedule: React.FC = () => {
             : 'bg-gradient-to-r from-emerald-500 to-emerald-600'
         } text-white text-center py-3 text-xl font-bold flex items-center justify-center gap-3`}>
           <div className="w-4 h-4 rounded-full bg-white/30"></div>
-          {selectedBranch || 'Chưa có cơ sở'}
+          {selectedBranchData.name}
         </div>
 
         <div className="overflow-x-auto print:overflow-visible">
@@ -639,9 +1085,9 @@ export const Schedule: React.FC = () => {
                     <td key={day} className={`border border-gray-300 p-1 align-top print:p-0.5 print:h-auto ${holidaysOnDay.length > 0 ? 'bg-red-50/50' : ''}`} style={{ verticalAlign: 'top' }}>
                       <div className="space-y-1 print:space-y-0.5">
                         {dayClasses.length > 0 ? (
-                          dayClasses.map((cls) => {
+                          dayClasses.map((cls, classIdx) => {
                             const info = parseClassDisplay(cls);
-                            const cardKey = `${cls.id}|${day}`;
+                            const cardKey = `${cls.id}|${day}|${cls.schedule || ''}|${classIdx}`;
                             const isExpanded = expandedCardId === cardKey;
                             
                             // Check if this class is affected by holiday
@@ -650,12 +1096,17 @@ export const Schedule: React.FC = () => {
                             
                             // Get consistent color for this class (uses saved color or fallback to hash)
                             const classColor = getClassColor(cls);
+                            const monthlySessionCount = getClassMonthlySessionCount(cls, selectedMonthDate);
+                            const revenueEstimate = getClassRevenueEstimate(cls, monthlySessionCount);
                             
                             return (
                               <div 
                                 key={cardKey}
                                 onClick={() => setExpandedCardId(isExpanded ? null : cardKey)}
-                                className={`group rounded-lg text-xs cursor-pointer transition-all duration-300 ease-out border-l-[3px] print:rounded-none print:border-0 print:shadow-none print:bg-transparent ${
+                                style={{ zIndex: isExpanded ? 20 : classIdx + 1 }}
+                                className={`group relative rounded-lg text-xs cursor-pointer transition-all duration-300 ease-out border-l-[3px] print:rounded-none print:border-0 print:shadow-none print:bg-transparent ${
+                                  classIdx > 0 ? '-mt-1.5 ml-1' : ''
+                                } ${
                                   isOnHoliday
                                     ? 'bg-red-50 border border-red-200 border-l-red-400 opacity-60'
                                     : isExpanded 
@@ -694,6 +1145,12 @@ export const Schedule: React.FC = () => {
                                           </>
                                         )}
                                       </p>
+                                      {revenueEstimate.hasTuitionData && revenueEstimate.canEstimateRevenue && (
+                                        <p className="text-emerald-700 text-[10px] print:hidden mt-1 flex items-center gap-1.5 font-semibold">
+                                          <DollarSign size={9} className="opacity-70" />
+                                          <span>{formatCurrency(revenueEstimate.estimatedRevenue)}</span>
+                                        </p>
+                                      )}
                                     </div>
                                   </div>
                                 </div>
@@ -768,6 +1225,30 @@ export const Schedule: React.FC = () => {
                                             </div>
                                           ))}
                                         </div>
+                                      )}
+                                    </div>
+
+                                    {/* Revenue Estimate */}
+                                    <div className="bg-emerald-50/80 rounded-lg p-2 border border-emerald-100">
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">Ước doanh thu</span>
+                                        <DollarSign size={12} className="text-emerald-600" />
+                                      </div>
+                                      {!revenueEstimate.canEstimateRevenue ? (
+                                        <p className="text-[10px] text-emerald-700/70">
+                                          Lớp tạm dừng không tính tiền dự trù.
+                                        </p>
+                                      ) : revenueEstimate.hasTuitionData ? (
+                                        <div className="space-y-1 text-[10px] text-emerald-800">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span>Tổng tháng</span>
+                                            <span className="font-bold">{formatCurrency(revenueEstimate.estimatedRevenue)}</span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <p className="text-[10px] text-emerald-700/70">
+                                          Cần có học phí để tính doanh thu.
+                                        </p>
                                       )}
                                     </div>
 
@@ -861,6 +1342,170 @@ export const Schedule: React.FC = () => {
         </div>
       </div>
 
+      {/* Monthly Teaching and Revenue Stats */}
+      <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-4 print:hidden">
+        <div className="xl:col-span-2 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-slate-50 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Clock size={18} className="text-indigo-600" />
+              <h3 className="font-bold text-slate-800">Thống kê giờ dạy giáo viên</h3>
+            </div>
+            <span className="text-xs font-semibold text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-md">
+              {monthlyStats.monthLabel}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-white text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3 text-left">Giáo viên</th>
+                  <th className="px-4 py-3 text-right">Giờ dạy</th>
+                  <th className="px-4 py-3 text-right">TB/ngày</th>
+                  <th className="px-4 py-3 text-right">Số buổi</th>
+                  <th className="px-4 py-3 text-right">Số lớp</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {monthlyStats.teacherStats.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                      Chưa có dữ liệu giờ dạy trong tháng này
+                    </td>
+                  </tr>
+                ) : monthlyStats.teacherStats.slice(0, 12).map((item) => (
+                  <tr key={item.name} className="hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                          {item.name.charAt(0)}
+                        </span>
+                        <span className="font-semibold text-slate-800">{item.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right font-bold text-indigo-700">
+                      {item.hours.toFixed(1)}h
+                    </td>
+                    <td className="px-4 py-3 text-right font-semibold text-slate-800">{item.averageHoursPerDay.toFixed(1)}h</td>
+                    <td className="px-4 py-3 text-right text-slate-700">{item.sessions}</td>
+                    <td className="px-4 py-3 text-right text-slate-700">{item.classCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar size={18} className="text-blue-600" />
+                <span className="text-xs font-semibold uppercase text-slate-500">Tổng buổi</span>
+              </div>
+              <p className="text-2xl font-bold text-slate-900">{monthlyStats.totalSessions}</p>
+              <p className="text-xs text-slate-400 mt-1">Tạm tính theo lịch tháng</p>
+            </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <DollarSign size={18} className="text-emerald-600" />
+                <span className="text-xs font-semibold uppercase text-slate-500">Tổng tiền</span>
+              </div>
+              <p className="text-xl font-bold text-emerald-700 break-words">{formatCurrency(monthlyStats.totalRevenue)}</p>
+              <p className="text-xs text-slate-400 mt-1">Theo thời khóa biểu tháng</p>
+            </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle size={18} className="text-teal-600" />
+                <span className="text-xs font-semibold uppercase text-slate-500">Thực thu</span>
+              </div>
+              <p className="text-xl font-bold text-teal-700 break-words">{formatCurrency(monthlyStats.totalActualRevenue)}</p>
+              <p className="text-xs text-slate-400 mt-1">Theo điểm danh đã lưu</p>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 bg-slate-50 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <DollarSign size={18} className="text-emerald-600" />
+                <h3 className="font-bold text-slate-800">Doanh thu ước tính theo lớp</h3>
+              </div>
+              <span className="text-xs font-semibold text-slate-500">{monthlyStats.classRevenueStats.length} lớp</span>
+            </div>
+            <div className="max-h-72 overflow-auto">
+              <table className="w-full min-w-[1040px] text-xs">
+                <thead className="sticky top-0 z-10 bg-white uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2.5 text-left">Lớp</th>
+                    <th className="px-3 py-2.5 text-right">Buổi TKB</th>
+                    <th className="px-3 py-2.5 text-right">Học phí/buổi</th>
+                    <th className="px-3 py-2.5 text-right">Học viên</th>
+                    <th className="px-3 py-2.5 text-right">Doanh thu dự kiến</th>
+                    <th className="px-3 py-2.5 text-right">Buổi đã điểm danh</th>
+                    <th className="px-3 py-2.5 text-right">Lượt thực học</th>
+                    <th className="px-3 py-2.5 text-right">Thực thu</th>
+                    <th className="px-3 py-2.5 text-right">Số buổi nghỉ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {monthlyStats.classRevenueStats.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-6 text-center text-sm text-slate-400">
+                        Chưa có lớp có học phí trong tháng này
+                      </td>
+                    </tr>
+                  ) : monthlyStats.classRevenueStats.slice(0, 10).map((item) => (
+                    <tr key={item.id} className="hover:bg-slate-50">
+                      <td className="px-3 py-3 font-semibold text-slate-800">{item.name}</td>
+                      <td className="px-3 py-3 text-right text-slate-700">{item.sessionCount}</td>
+                      <td className="px-3 py-3 text-right text-slate-700">{formatCurrency(item.pricePerSession)}</td>
+                      <td className="px-3 py-3 text-right text-slate-700">{item.studentCount}</td>
+                      <td className="px-3 py-3 text-right font-bold text-emerald-700">{formatCurrency(item.revenue)}</td>
+                      <td className="px-3 py-3 text-right text-teal-700">{item.actualSessions}</td>
+                      <td className="px-3 py-3 text-right text-teal-700">{item.actualStudentCount}</td>
+                      <td className="px-3 py-3 text-right font-bold text-teal-700">{formatCurrency(item.actualRevenue)}</td>
+                      <td className="px-3 py-3 text-right text-rose-600">{item.absentCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-gray-100 bg-slate-50 flex items-center gap-2">
+              <TrendingUp size={18} className="text-emerald-600" />
+              <h3 className="font-bold text-slate-800">Dự kiến và thực thu theo tháng</h3>
+            </div>
+            <div className="p-4">
+              <div className="h-48 flex items-end gap-2">
+                {revenueGrowthData.map((item) => (
+                  <div key={item.month} className="flex-1 h-full flex flex-col justify-end items-center gap-2 min-w-0">
+                    <div className="w-full flex items-end justify-center gap-1 h-36">
+                      <div
+                        className="w-full max-w-5 rounded-t-md bg-gradient-to-t from-emerald-500 to-teal-400"
+                        style={{ height: `${Math.max(6, (item.amount / maxRevenue) * 100)}%` }}
+                        title={`${item.month} dự kiến theo thời khóa biểu: ${formatCurrency(item.amount)}`}
+                      />
+                      <div
+                        className="w-full max-w-5 rounded-t-md bg-gradient-to-t from-sky-500 to-blue-400"
+                        style={{ height: `${Math.max(6, (item.actual / maxRevenue) * 100)}%` }}
+                        title={`${item.month} thực thu: ${formatCurrency(item.actual)}`}
+                      />
+                    </div>
+                    <span className="text-xs font-semibold text-slate-600">{item.month}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
+                <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-emerald-500" /> Dự kiến</span>
+                <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-sky-500" /> Thực thu</span>
+                <span className="inline-flex items-center gap-1.5"><BarChart3 size={14} /> 6 tháng gần nhất</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Print Footer */}
       <div className="hidden print:block text-center text-xs text-gray-400 mt-8">
         <p>Hệ thống quản lý đào tạo EduManager Pro</p>
@@ -907,10 +1552,7 @@ const ClassDetailModal: React.FC<ClassDetailModalProps> = ({ classData, allStude
     const fetchSessions = async () => {
       setLoading(true);
       try {
-        const sessionsSnap = await getDocs(
-          query(collection(db, 'classSessions'), where('classId', '==', classData.id))
-        );
-        const data = sessionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const data = await getSessionsByClass(classData.id);
         setSessions(data);
       } catch (err) {
         console.error('Error fetching sessions:', err);
@@ -922,8 +1564,21 @@ const ClassDetailModal: React.FC<ClassDetailModalProps> = ({ classData, allStude
   }, [classData.id]);
 
   const completedSessions = sessions.filter(s => s.status === 'Đã học').length;
+  const getTodayLocalDate = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const formatDateOnlyForDisplay = (value?: string, options?: Intl.DateTimeFormatOptions) => {
+    if (!value) return '';
+    const [year, month, day] = value.slice(0, 10).split('-').map(Number);
+    if (!year || !month || !day) return '';
+    return new Date(year, month - 1, day).toLocaleDateString('vi-VN', options);
+  };
   const upcomingSessions = sessions
-    .filter(s => s.status === 'Chưa học' && s.date >= new Date().toISOString().split('T')[0])
+    .filter(s => s.status === 'Chưa học' && s.date >= getTodayLocalDate())
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(0, 5);
 
@@ -1067,9 +1722,9 @@ const ClassDetailModal: React.FC<ClassDetailModalProps> = ({ classData, allStude
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-amber-600/70 font-semibold">Thời gian khóa học</p>
                 <p className="font-semibold text-slate-800">
-                  {classData.startDate ? new Date(classData.startDate).toLocaleDateString('vi-VN') : 'Chưa có'} 
+                  {formatDateOnlyForDisplay(classData.startDate) || 'Chưa có'} 
                   <span className="mx-2 text-amber-400">→</span>
-                  {classData.endDate ? new Date(classData.endDate).toLocaleDateString('vi-VN') : 'Chưa có'}
+                  {formatDateOnlyForDisplay(classData.endDate) || 'Chưa có'}
                 </p>
               </div>
             </div>
@@ -1109,10 +1764,10 @@ const ClassDetailModal: React.FC<ClassDetailModalProps> = ({ classData, allStude
                       {upcomingSessions.map((session, idx) => (
                         <div key={session.id} className="text-center p-2 bg-white rounded-lg border border-slate-100 hover:border-indigo-200 transition-colors">
                           <p className="text-xs font-bold text-indigo-600">
-                            {new Date(session.date).toLocaleDateString('vi-VN', { weekday: 'short' })}
+                            {formatDateOnlyForDisplay(session.date, { weekday: 'short' })}
                           </p>
                           <p className="text-sm font-semibold text-slate-800">
-                            {new Date(session.date).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}
+                            {formatDateOnlyForDisplay(session.date, { day: '2-digit', month: '2-digit' })}
                           </p>
                         </div>
                       ))}

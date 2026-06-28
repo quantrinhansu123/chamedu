@@ -31,7 +31,7 @@ export const RevenueChart: React.FC<RevenueChartProps> = ({
           <div className="p-2 bg-gradient-to-br from-[#FF6B5A] to-[#FF8F7A] rounded-xl shadow-lg shadow-[#FF6B5A]/30">
             <PieChartIcon className="text-white" size={20} />
           </div>
-          <h3 className="font-bold text-gray-800">Doanh số bán hàng</h3>
+          <h3 className="font-bold text-gray-800">Doanh số điểm danh</h3>
         </div>
         <div className="text-right">
           <div className="text-xl font-bold bg-gradient-to-r from-[#FF6B5A] to-[#FF8F7A] bg-clip-text text-transparent">

@@ -1,11 +1,8 @@
 /**
- * useStaff Hook - Realtime listener
- * React hook for staff operations
+ * useStaff Hook — Supabase polling
  */
 
-import { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Staff } from '../../types';
 import * as staffService from '../services/staffService';
 
@@ -30,61 +27,47 @@ export const useStaff = (props?: UseStaffProps): UseStaffReturn => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Realtime listener
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-
-    const unsubscribe = onSnapshot(
-      collection(db, 'staff'),
-      (snapshot) => {
-        const data = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Staff[];
-        setAllStaff(data);
-        setLoading(false);
-      },
-      (err) => {
-        setError(err.message || 'Không thể tải danh sách nhân viên');
-        setLoading(false);
-      }
-    );
-
-    return () => unsubscribe();
+  const fetchStaff = useCallback(async () => {
+    try {
+      setError(null);
+      const data = await staffService.getStaff();
+      setAllStaff(data);
+    } catch (err: any) {
+      setError(err.message || 'Không thể tải danh sách nhân viên');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Client-side filtering
+  useEffect(() => {
+    setLoading(true);
+    fetchStaff();
+    const timer = setInterval(fetchStaff, 15000);
+    return () => clearInterval(timer);
+  }, [fetchStaff]);
+
   const staff = useMemo(() => {
     let filtered = allStaff;
-    
-    if (props?.department) {
-      filtered = filtered.filter(s => s.department === props.department);
-    }
-    if (props?.role) {
-      filtered = filtered.filter(s => s.role === props.role);
-    }
-    if (props?.status) {
-      filtered = filtered.filter(s => s.status === props.status);
-    }
-    
+    if (props?.department) filtered = filtered.filter((s) => s.department === props.department);
+    if (props?.role) filtered = filtered.filter((s) => s.role === props.role);
+    if (props?.status) filtered = filtered.filter((s) => s.status === props.status);
     return filtered;
   }, [allStaff, props?.department, props?.role, props?.status]);
 
   const createStaff = async (data: Omit<Staff, 'id'>): Promise<string> => {
-    return await staffService.createStaff(data);
+    const id = await staffService.createStaff(data);
+    await fetchStaff();
+    return id;
   };
 
   const updateStaff = async (id: string, data: Partial<Staff>): Promise<void> => {
     await staffService.updateStaff(id, data);
+    await fetchStaff();
   };
 
   const deleteStaff = async (id: string): Promise<void> => {
     await staffService.deleteStaff(id);
-  };
-
-  const refresh = async (): Promise<void> => {
-    // No-op for realtime - data auto-updates
+    await fetchStaff();
   };
 
   return {
@@ -94,6 +77,6 @@ export const useStaff = (props?: UseStaffProps): UseStaffReturn => {
     createStaff,
     updateStaff,
     deleteStaff,
-    refresh,
+    refresh: fetchStaff,
   };
 };

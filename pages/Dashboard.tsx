@@ -1,11 +1,13 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Dashboard Page
  * Warm Education Design - Teal & Coral Theme
  * Aesthetic: Professional, Warm, Memorable
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { getCenters } from '../src/services/centerService';
 import {
   Users,
   BookOpen,
@@ -36,8 +38,10 @@ import {
   GraduationCap
 } from 'lucide-react';
 import { 
+  Area,
   BarChart, 
   Bar, 
+  ComposedChart,
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -46,18 +50,19 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend
+  Legend,
+  Line
 } from 'recharts';
-import { collection, getDocs, query, where, orderBy, limit, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { formatCurrency } from '../src/utils/currencyUtils';
-import { getRevenueSummary, RevenueByCategory } from '../src/services/financialReportService';
-import { seedAllData, clearAllData } from '../scripts/seedAllData';
+import { getRevenueSummary, type RevenueGrowthPoint } from '../src/services/revenueService';
+import { StudentService } from '../src/services/studentService';
+import { ClassService } from '../src/services/classService';
 import { useSalaryReport } from '../src/hooks/useSalaryReport';
 import { useProducts } from '../src/hooks/useProducts';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
 import { ModalPortal } from '@/components/modal-portal';
+import { StudentStatus } from '../types';
 
 // Warm Education Color Palette - Teal & Coral Theme
 const COLORS = {
@@ -70,6 +75,24 @@ const COLORS = {
 };
 
 const PIE_COLORS = ['#0D9488', '#FF6B5A', '#F59E0B', '#10B981', '#6366F1'];
+
+type RevenueGrowthPeriod = 'daily' | 'monthly' | 'yearly';
+type StudentStatsPeriod = 'daily' | 'monthly' | 'yearly';
+type StudentMetricKey = 'trialStudents' | 'totalStudents' | 'droppedStudents';
+
+const STUDENT_STAT_METRICS: Array<{ key: StudentMetricKey; label: string; color: string; category?: string }> = [
+  { key: 'trialStudents', label: 'Học thử', color: COLORS.hocThu, category: StudentStatus.TRIAL },
+  { key: 'totalStudents', label: 'Số học sinh', color: COLORS.hvMoi },
+  { key: 'droppedStudents', label: 'Nghỉ học', color: COLORS.nghiHoc, category: StudentStatus.DROPPED },
+];
+
+interface StudentTrendPoint {
+  key: string;
+  label: string;
+  trialStudents: number;
+  totalStudents: number;
+  droppedStudents: number;
+}
 
 // Gradient definitions for cards - Warm Education Theme
 const GRADIENTS = {
@@ -90,6 +113,10 @@ interface StudentData {
   status?: string;
   hasDebt?: boolean;
   createdAt?: string;
+  updatedAt?: string;
+  enrollmentDate?: string;
+  startDate?: string;
+  dropoutDate?: string;
   parentPhone?: string;
 }
 
@@ -131,6 +158,98 @@ interface DashboardStats {
   myConfirmedSessions: number;
   myTotalSessions: number;
 }
+
+const parseDashboardDate = (value?: string | Date | { toDate?: () => Date } | null): Date | null => {
+  if (!value) return null;
+  const date = typeof value === 'object' && 'toDate' in value && value.toDate ? value.toDate() : new Date(value as string | Date);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate());
+const endOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+const addDays = (date: Date, days: number) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+const addMonths = (date: Date, months: number) => new Date(date.getFullYear(), date.getMonth() + months, 1);
+
+const getStudentStartedDate = (student: StudentData): Date | null =>
+  parseDashboardDate(student.enrollmentDate || student.startDate || student.createdAt);
+
+const getStudentDroppedDate = (student: StudentData): Date | null =>
+  parseDashboardDate(student.dropoutDate || student.updatedAt || student.createdAt);
+
+const buildStudentTrendData = (students: StudentData[], period: StudentStatsPeriod): StudentTrendPoint[] => {
+  const now = new Date();
+  const buckets: Array<{ key: string; label: string; start: Date; end: Date }> = [];
+
+  if (period === 'daily') {
+    const firstDay = addDays(startOfDay(now), -29);
+    for (let index = 0; index < 30; index += 1) {
+      const day = addDays(firstDay, index);
+      buckets.push({
+        key: day.toISOString().slice(0, 10),
+        label: `${String(day.getDate()).padStart(2, '0')}/${String(day.getMonth() + 1).padStart(2, '0')}`,
+        start: startOfDay(day),
+        end: endOfDay(day),
+      });
+    }
+  } else if (period === 'monthly') {
+    const firstMonth = addMonths(new Date(now.getFullYear(), now.getMonth(), 1), -11);
+    for (let index = 0; index < 12; index += 1) {
+      const month = addMonths(firstMonth, index);
+      buckets.push({
+        key: `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}`,
+        label: `T${month.getMonth() + 1}/${month.getFullYear()}`,
+        start: month,
+        end: new Date(month.getFullYear(), month.getMonth() + 1, 0, 23, 59, 59, 999),
+      });
+    }
+  } else {
+    const firstYear = now.getFullYear() - 4;
+    for (let year = firstYear; year <= now.getFullYear(); year += 1) {
+      buckets.push({
+        key: String(year),
+        label: String(year),
+        start: new Date(year, 0, 1),
+        end: new Date(year, 11, 31, 23, 59, 59, 999),
+      });
+    }
+  }
+
+  return buckets.map((bucket) => {
+    let trialStudents = 0;
+    let totalStudents = 0;
+    let droppedStudents = 0;
+
+    students.forEach((student) => {
+      const startedDate = getStudentStartedDate(student);
+      const droppedDate = student.status === StudentStatus.DROPPED ? getStudentDroppedDate(student) : null;
+
+      if (student.status === StudentStatus.TRIAL && startedDate && startedDate >= bucket.start && startedDate <= bucket.end) {
+        trialStudents += 1;
+      }
+
+      if (student.status === StudentStatus.DROPPED && droppedDate && droppedDate >= bucket.start && droppedDate <= bucket.end) {
+        droppedStudents += 1;
+      }
+
+      if (
+        student.status === StudentStatus.ACTIVE &&
+        startedDate &&
+        startedDate >= bucket.start &&
+        startedDate <= bucket.end
+      ) {
+        totalStudents += 1;
+      }
+    });
+
+    return {
+      key: bucket.key,
+      label: bucket.label,
+      trialStudents,
+      totalStudents,
+      droppedStudents,
+    };
+  });
+};
 
 export const Dashboard: React.FC = () => {
   // Permission check for revenue and salary visibility
@@ -187,6 +306,12 @@ export const Dashboard: React.FC = () => {
   const [statsCategory, setStatsCategory] = useState<'salary' | 'students' | 'revenue'>('students'); // Default to students for safety
   const [statsSortOrder, setStatsSortOrder] = useState('asc'); // asc = thấp đến cao
   const [statsLimit, setStatsLimit] = useState(5);
+  const [studentStatsPeriod, setStudentStatsPeriod] = useState<StudentStatsPeriod>('monthly');
+  const [visibleStudentMetrics, setVisibleStudentMetrics] = useState<Record<StudentMetricKey, boolean>>({
+    trialStudents: true,
+    totalStudents: true,
+    droppedStudents: true,
+  });
 
   // Fallback logic: reset category if user loses permission
   useEffect(() => {
@@ -217,18 +342,15 @@ export const Dashboard: React.FC = () => {
   const [selectedBranch, setSelectedBranch] = useState('all');
   const [centerList, setCenterList] = useState<{ id: string; name: string }[]>([]);
   
-  // Fetch centers from Firestore
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
-        const centers = centersSnap.docs
-          .filter(d => d.data().status === 'Active')
-          .map(d => ({
-            id: d.id,
-            name: d.data().name || '',
-          }));
-        setCenterList(centers);
+        const data = await getCenters();
+        setCenterList(
+          data
+            .filter((c) => c.status === 'Active')
+            .map((c) => ({ id: c.id!, name: c.name }))
+        );
       } catch (err) {
         console.error('Error fetching centers:', err);
       }
@@ -240,49 +362,31 @@ export const Dashboard: React.FC = () => {
   const [allStudents, setAllStudents] = useState<StudentData[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showStudentModal, setShowStudentModal] = useState(false);
+  const studentTrendData = useMemo(
+    () => buildStudentTrendData(allStudents, studentStatsPeriod),
+    [allStudents, studentStatsPeriod]
+  );
+  const activeStudentMetrics = useMemo(
+    () => STUDENT_STAT_METRICS.filter((metric) => visibleStudentMetrics[metric.key]),
+    [visibleStudentMetrics]
+  );
   
   // State cho doanh số bán hàng từ báo cáo tài chính
   const [revenuePieData, setRevenuePieData] = useState<{ name: string; value: number; color: string }[]>([]);
-  const [seeding, setSeeding] = useState(false);
-
-  // Seed test data
-  const handleSeedData = async () => {
-    if (seeding) return;
-    if (!confirm('Bạn có muốn tạo dữ liệu test TOÀN BỘ cho app không?\n\nSẽ tạo: Students, Classes, Parents, Contracts, Staff, Products, Leads, Campaigns, Attendance, Tutoring, Feedback, Invoices, Work Sessions...')) return;
-    
-    setSeeding(true);
-    try {
-      const results = await seedAllData();
-      const total = Object.values(results).reduce((a, b) => a + b, 0);
-      alert(`✅ Đã tạo ${total} records thành công!\n\nChi tiết:\n${Object.entries(results).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`);
-      fetchDashboardData(); // Refresh data
-    } catch (error) {
-      console.error('Error seeding data:', error);
-      alert('❌ Lỗi khi tạo dữ liệu: ' + (error as Error).message);
-    } finally {
-      setSeeding(false);
-    }
-  };
-
-  // Clear all data
-  const handleClearData = async () => {
-    if (seeding) return;
-    if (!confirm('⚠️ CẢNH BÁO: Bạn có chắc muốn XÓA TOÀN BỘ dữ liệu không?\n\nHành động này không thể hoàn tác!')) return;
-    if (!confirm('Xác nhận lần cuối: XÓA TẤT CẢ DỮ LIỆU?')) return;
-    
-    setSeeding(true);
-    try {
-      await clearAllData();
-      alert('✅ Đã xóa toàn bộ dữ liệu!');
-      fetchDashboardData(); // Refresh data
-    } catch (error) {
-      console.error('Error clearing data:', error);
-      alert('❌ Lỗi khi xóa dữ liệu: ' + (error as Error).message);
-    } finally {
-      setSeeding(false);
-    }
-  };
-
+  const [revenueGrowthPeriod, setRevenueGrowthPeriod] = useState<RevenueGrowthPeriod>('monthly');
+  const [revenueGrowthSeries, setRevenueGrowthSeries] = useState<Record<RevenueGrowthPeriod, RevenueGrowthPoint[]>>({
+    daily: [],
+    monthly: [],
+    yearly: [],
+  });
+  const revenueGrowthChartData = useMemo(
+    () => revenueGrowthSeries[revenueGrowthPeriod].slice(-12),
+    [revenueGrowthPeriod, revenueGrowthSeries]
+  );
+  const visibleRevenueGrowth = useMemo(
+    () => revenueGrowthSeries[revenueGrowthPeriod].slice(-12).reverse(),
+    [revenueGrowthPeriod, revenueGrowthSeries]
+  );
   useEffect(() => {
     fetchDashboardData();
   }, [selectedBranch]); // Re-fetch when branch filter changes
@@ -293,7 +397,7 @@ export const Dashboard: React.FC = () => {
     const thisMonth = new Date().getMonth() + 1;
     
     const unsubscribe = onSnapshot(
-      query(collection(db, 'birthdayGifts'), where('year', '==', thisYear), where('month', '==', thisMonth)),
+      query(collection(null as any /* firebase removed */, 'birthdayGifts'), where('year', '==', thisYear), where('month', '==', thisMonth)),
       (snapshot) => {
         const gifts: Record<string, { giftPrepared: boolean; giftGiven: boolean }> = {};
         snapshot.docs.forEach(doc => {
@@ -314,7 +418,7 @@ export const Dashboard: React.FC = () => {
     const thisYear = new Date().getFullYear();
     const thisMonth = new Date().getMonth() + 1;
     const docId = `${studentId}_${thisYear}_${thisMonth}`;
-    const docRef = doc(db, 'birthdayGifts', docId);
+    const docRef = doc(null as any /* firebase removed */, 'birthdayGifts', docId);
     
     const currentStatus = birthdayGifts[studentId]?.[field] || false;
     const newStatus = !currentStatus;
@@ -334,16 +438,19 @@ export const Dashboard: React.FC = () => {
       setLoading(true);
 
       // Fetch students
-      const studentsSnap = await getDocs(collection(db, 'students'));
-      const allStudentsData = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as StudentData[];
+      const allStudentsData = (await StudentService.getStudents()).map((student: any) => ({
+        ...student,
+        className: student.className || student.class,
+        currentClassName: student.currentClassName || student.class,
+        hasDebt: student.hasDebt || student.status === 'Nợ phí',
+      })) as StudentData[];
       setAllStudents(allStudentsData);
 
       // Fetch classes
-      const classesSnap = await getDocs(collection(db, 'classes'));
-      const allClasses = classesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const allClasses = await ClassService.getClasses();
 
       // Fetch contracts for revenue
-      const contractsSnap = await getDocs(collection(db, 'contracts'));
+      const contractsSnap = await getDocs(collection(null as any /* firebase removed */, 'contracts'));
       const allContracts = contractsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Record<string, any>));
 
       // Apply branch filter
@@ -410,8 +517,9 @@ export const Dashboard: React.FC = () => {
       const paidContracts = contracts.filter(c => c.status === 'Paid' || c.status === 'Đã thanh toán');
       const debtContracts = contracts.filter(c => c.status === 'Debt' || c.status === 'Nợ phí');
       
-      const totalRevenue = paidContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
-      const totalDebt = debtContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
+      let totalRevenue = paidContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
+      let totalDebt = debtContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
+      let revenueData: { month: string; expected: number; actual: number }[] = [];
       
       // Calculate bad debt from students who dropped out with debt
       const badDebtStudentsList = students.filter((s: any) => s.badDebt === true);
@@ -420,11 +528,20 @@ export const Dashboard: React.FC = () => {
       
       // Fetch financial report data for pie chart
       try {
-        const currentMonth = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
-        const financialSummary = await getRevenueSummary(currentMonth);
-        
-        if (financialSummary.revenueByCategory.length > 0) {
-          setRevenuePieData(financialSummary.revenueByCategory.map(item => ({
+        const financialSummary = await getRevenueSummary(new Date().getFullYear(), selectedBranch);
+        const currentMonthLabel = `T${new Date().getMonth() + 1}`;
+        const currentMonthRevenue = financialSummary.byMonth.find((item) => item.month === currentMonthLabel);
+
+        totalRevenue = financialSummary.totalRevenue;
+        totalDebt = financialSummary.debtAmount;
+        revenueData = currentMonthRevenue ? [
+          { month: 'Kỳ vọng', expected: currentMonthRevenue.expectedRevenue, actual: 0 },
+          { month: 'Thực tế', expected: 0, actual: currentMonthRevenue.totalRevenue },
+          { month: 'Chênh lệch', expected: 0, actual: Math.max(currentMonthRevenue.expectedRevenue - currentMonthRevenue.totalRevenue, 0) },
+        ] : [];
+
+        if (financialSummary.byCategory.length > 0) {
+          setRevenuePieData(financialSummary.byCategory.map((item: any) => ({
             name: item.category,
             value: item.amount,
             color: item.color,
@@ -433,29 +550,33 @@ export const Dashboard: React.FC = () => {
           // No data - show empty
           setRevenuePieData([]);
         }
+        setRevenueGrowthSeries(financialSummary.growth);
       } catch (err) {
         console.error('Error fetching financial data:', err);
         setRevenuePieData([]);
+        setRevenueGrowthSeries({ daily: [], monthly: [], yearly: [] });
       }
       
       // Revenue comparison data from contracts
-      const revenueData = totalRevenue > 0 ? [
-        { month: 'Kỳ vọng', expected: totalRevenue * 1.2, actual: 0 },
-        { month: 'Thực tế', expected: 0, actual: totalRevenue },
-        { month: 'Chênh lệch', expected: 0, actual: totalRevenue * 0.2 },
-      ] : [];
+      if (revenueData.length === 0 && totalRevenue > 0) {
+        revenueData = [
+          { month: 'Kỳ vọng', expected: totalRevenue * 1.2, actual: 0 },
+          { month: 'Thực tế', expected: 0, actual: totalRevenue },
+          { month: 'Chênh lệch', expected: 0, actual: totalRevenue * 0.2 },
+        ];
+      }
       
       // Products are now loaded via useProducts() hook with realtime updates
       // No need to fetch here - see allProducts from useProducts()
       
       // Fetch staff for birthday and salary - real data from Firebase
-      const staffSnap = await getDocs(collection(db, 'staff'));
+      const staffSnap = await getDocs(collection(null as any /* firebase removed */, 'staff'));
       const staffListRaw = staffSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
       // Also get staff from staffSalaries if staff collection is empty
       let allStaffRaw = staffListRaw;
       if (staffListRaw.length === 0) {
-        const staffSalariesSnap = await getDocs(collection(db, 'staffSalaries'));
+        const staffSalariesSnap = await getDocs(collection(null as any /* firebase removed */, 'staffSalaries'));
         const uniqueStaff = new Map();
         staffSalariesSnap.docs.forEach(d => {
           const data = d.data();
@@ -563,7 +684,7 @@ export const Dashboard: React.FC = () => {
       });
       
       // Fetch work sessions for real salary calculation
-      const workSessionsSnap = await getDocs(collection(db, 'workSessions'));
+      const workSessionsSnap = await getDocs(collection(null as any /* firebase removed */, 'workSessions'));
       const workSessionsRaw = workSessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       // Keep workSessions alias for GV dashboard (needs all sessions, not filtered by branch)
       const workSessions = workSessionsRaw;
@@ -784,7 +905,7 @@ export const Dashboard: React.FC = () => {
       // Fetch schedule for upcoming classes
       let upcomingClasses: { id: string; className: string; date: string; time: string; room: string }[] = [];
       try {
-        const scheduleSnap = await getDocs(collection(db, 'schedule'));
+        const scheduleSnap = await getDocs(collection(null as any /* firebase removed */, 'schedule'));
         const scheduleData = scheduleSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
         upcomingClasses = scheduleData
@@ -835,7 +956,7 @@ export const Dashboard: React.FC = () => {
       // BTVN needing report - classes that had class recently but no homework report
       let btvnNeedingReport: { id: string; className: string; lastClassDate: string }[] = [];
       try {
-        const homeworkSnap = await getDocs(collection(db, 'homework'));
+        const homeworkSnap = await getDocs(collection(null as any /* firebase removed */, 'homework'));
         const homeworkData = homeworkSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
         // Find classes needing report (simplified logic)
@@ -863,7 +984,7 @@ export const Dashboard: React.FC = () => {
       // Top 5 frequently absent students (from my classes only)
       let topAbsentStudents: { id: string; name: string; absences: number }[] = [];
       try {
-        const attendanceSnap = await getDocs(collection(db, 'studentAttendance'));
+        const attendanceSnap = await getDocs(collection(null as any /* firebase removed */, 'studentAttendance'));
         const attendanceData = attendanceSnap.docs.map(d => d.data());
 
         const absenceCounts: { [studentId: string]: number } = {};
@@ -954,7 +1075,7 @@ export const Dashboard: React.FC = () => {
       // Tính điểm hài lòng từ feedback
       let diemHaiLong = 0;
       try {
-        const feedbackSnap = await getDocs(collection(db, 'feedbacks'));
+        const feedbackSnap = await getDocs(collection(null as any /* firebase removed */, 'feedbacks'));
         if (feedbackSnap.size > 0) {
           const totalRating = feedbackSnap.docs.reduce((sum, doc) => sum + (doc.data().rating || 0), 0);
           diemHaiLong = Math.round((totalRating / feedbackSnap.size) * 20); // rating 1-5 -> 20-100%
@@ -1274,29 +1395,48 @@ export const Dashboard: React.FC = () => {
           <div className={`col-span-12 ${canSeeRevenue ? 'lg:col-span-7' : ''} space-y-6`}>
             {/* Student Stats Bar Chart */}
             <div className="group bg-white/80 backdrop-blur-sm rounded-2xl p-6 shadow-lg shadow-slate-200/50 border border-white/60 hover:shadow-xl hover:shadow-teal-100/30 transition-all duration-300">
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-gradient-to-br from-teal-500 to-emerald-600 rounded-xl shadow-lg shadow-teal-500/30">
                     <BarChart3 className="text-white" size={20} />
                   </div>
                   <div>
                     <h3 className="font-bold text-gray-800">Thống kê học viên</h3>
-                    <span className="text-xs text-gray-500">{currentMonth}</span>
+                    <span className="text-xs text-gray-500">Theo ngày, tháng hoặc năm</span>
                   </div>
                 </div>
-                <div className="flex gap-1">
-                  {stats.studentsByStatus.map((item, idx) => (
-                    <div key={idx} className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }}></div>
+                <div className="inline-flex rounded-xl border border-teal-100 bg-teal-50 p-1 text-xs font-semibold">
+                  {[
+                    ['daily', 'Ngày'],
+                    ['monthly', 'Tháng'],
+                    ['yearly', 'Năm'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setStudentStatsPeriod(value as StudentStatsPeriod)}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        studentStatsPeriod === value
+                          ? 'bg-white text-teal-700 shadow-sm'
+                          : 'text-gray-500 hover:text-teal-700'
+                      }`}
+                    >
+                      {label}
+                    </button>
                   ))}
                 </div>
               </div>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={stats.studentsByStatus} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                  <BarChart data={studentTrendData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                    <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                     <Tooltip 
+                      formatter={(value: number, name: string) => {
+                        const metric = STUDENT_STAT_METRICS.find((item) => item.key === name);
+                        return [value, metric?.label || name];
+                      }}
                       contentStyle={{ 
                         background: 'rgba(255,255,255,0.95)', 
                         border: 'none', 
@@ -1304,24 +1444,41 @@ export const Dashboard: React.FC = () => {
                         boxShadow: '0 10px 40px rgba(0,0,0,0.1)' 
                       }} 
                     />
-                    <Bar dataKey="value" radius={[8, 8, 0, 0]} onClick={handleBarClick} className="cursor-pointer">
-                      {stats.studentsByStatus.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
+                    {activeStudentMetrics.map((metric) => (
+                      <Bar
+                        key={metric.key}
+                        dataKey={metric.key}
+                        name={metric.label}
+                        fill={metric.color}
+                        radius={[8, 8, 0, 0]}
+                        maxBarSize={42}
+                      />
+                    ))}
                   </BarChart>
                 </ResponsiveContainer>
               </div>
               <div className="flex flex-wrap gap-3 mt-4 justify-center">
-                {stats.studentsByStatus.map((item, idx) => (
+                {STUDENT_STAT_METRICS.map((item) => (
                   <button
-                    key={idx}
-                    onClick={() => { setSelectedCategory(item.name); setShowStudentModal(true); }}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-50 hover:bg-gray-100 transition-colors text-xs font-medium"
+                    key={item.key}
+                    type="button"
+                    onClick={() =>
+                      setVisibleStudentMetrics((prev) => ({
+                        ...prev,
+                        [item.key]: !prev[item.key],
+                      }))
+                    }
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full transition-colors text-xs font-medium border ${
+                      visibleStudentMetrics[item.key]
+                        ? 'bg-gray-50 border-gray-100 text-gray-700'
+                        : 'bg-white border-gray-200 text-gray-400'
+                    }`}
                   >
                     <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }}></div>
-                    <span className="text-gray-700">{item.name}</span>
-                    <span className="text-gray-400">({item.value})</span>
+                    <span>{item.label}</span>
+                    <span className="text-gray-400">
+                      ({studentTrendData.reduce((sum, row) => sum + Number(row[item.key] || 0), 0)})
+                    </span>
                   </button>
                 ))}
               </div>
@@ -1392,6 +1549,138 @@ export const Dashboard: React.FC = () => {
               )}
             </div>
             )}
+
+            <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 shadow-lg shadow-slate-200/50 border border-white/60 hover:shadow-xl hover:shadow-emerald-100/30 transition-all duration-300">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-br from-cyan-500 to-teal-600 rounded-xl shadow-lg">
+                    <TrendingUp className="text-white" size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-gray-800">Tăng trưởng học phí dự kiến</h3>
+                    <p className="text-xs text-gray-500">Theo ngày, tháng hoặc năm</p>
+                  </div>
+                </div>
+                <div className="inline-flex rounded-xl border border-teal-100 bg-teal-50 p-1 text-xs font-semibold">
+                  {[
+                    ['daily', 'Ngày'],
+                    ['monthly', 'Tháng'],
+                    ['yearly', 'Năm'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setRevenueGrowthPeriod(value as RevenueGrowthPeriod)}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        revenueGrowthPeriod === value
+                          ? 'bg-white text-teal-700 shadow-sm'
+                          : 'text-gray-500 hover:text-teal-700'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {revenueGrowthChartData.length > 0 ? (
+                <div className="mb-5 h-60 rounded-2xl bg-gradient-to-b from-teal-50/70 to-white p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={revenueGrowthChartData} margin={{ top: 10, right: 12, left: -12, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="revenueGrowthArea" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#0D9488" stopOpacity={0.34} />
+                          <stop offset="95%" stopColor="#0D9488" stopOpacity={0.03} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#dbeafe" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: '#64748b' }}
+                        tickFormatter={(value) => `${(Number(value) / 1000000).toFixed(0)}tr`}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        formatter={(value: number, name: string) => [
+                          name === 'growthRate' ? `${value.toFixed(1)}%` : formatCurrency(value),
+                          name === 'growthRate' ? 'Tỷ lệ tăng trưởng' : 'Học phí dự kiến',
+                        ]}
+                        contentStyle={{
+                          background: 'rgba(255,255,255,0.96)',
+                          border: 'none',
+                          borderRadius: '12px',
+                          boxShadow: '0 10px 40px rgba(15,23,42,0.12)',
+                        }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="revenue"
+                        name="Học phí dự kiến"
+                        stroke="#0D9488"
+                        strokeWidth={2}
+                        fill="url(#revenueGrowthArea)"
+                        activeDot={{ r: 5, fill: '#0D9488', stroke: '#ffffff', strokeWidth: 2 }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="revenue"
+                        name="Đường tăng trưởng"
+                        stroke="#14B8A6"
+                        strokeWidth={3}
+                        dot={{ r: 3, fill: '#14B8A6', stroke: '#ffffff', strokeWidth: 2 }}
+                        activeDot={{ r: 5 }}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="mb-5 h-52 flex flex-col items-center justify-center rounded-2xl bg-teal-50/50 text-gray-400">
+                  <TrendingUp size={36} className="mb-2 opacity-30" />
+                  <span className="text-sm">Chưa có dữ liệu biểu đồ tăng trưởng</span>
+                </div>
+              )}
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm">
+                  <thead className="bg-teal-50/60 text-xs uppercase text-gray-500">
+                    <tr>
+                      <th className="px-3 py-2.5 text-left font-semibold">Kỳ</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">Học phí dự kiến</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">Tăng/Giảm</th>
+                      <th className="px-3 py-2.5 text-right font-semibold">Tỷ lệ</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {visibleRevenueGrowth.length > 0 ? (
+                      visibleRevenueGrowth.map((item) => {
+                        const isUp = item.change >= 0;
+                        return (
+                          <tr key={item.key} className="hover:bg-teal-50/30 transition-colors">
+                            <td className="px-3 py-2.5 font-medium text-gray-800">{item.label}</td>
+                            <td className="px-3 py-2.5 text-right font-semibold text-teal-700">
+                              {formatCurrency(item.revenue)}
+                            </td>
+                            <td className={`px-3 py-2.5 text-right font-semibold ${isUp ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {isUp ? '+' : ''}{formatCurrency(item.change)}
+                            </td>
+                            <td className={`px-3 py-2.5 text-right font-semibold ${item.growthRate === null ? 'text-gray-400' : isUp ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {item.growthRate === null ? '-' : `${isUp ? '+' : ''}${item.growthRate.toFixed(1)}%`}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-8 text-center text-gray-400">
+                          Chưa có dữ liệu tăng trưởng học phí dự kiến
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
           {/* Right Column - Pie Charts - Only for revenue-allowed roles */}
@@ -1404,7 +1693,7 @@ export const Dashboard: React.FC = () => {
                   <div className="p-2 bg-gradient-to-br from-[#FF6B5A] to-[#FF8F7A] rounded-xl shadow-lg shadow-[#FF6B5A]/30">
                     <PieChartIcon className="text-white" size={20} />
                   </div>
-                  <h3 className="font-bold text-gray-800">Doanh số bán hàng</h3>
+                  <h3 className="font-bold text-gray-800">Doanh số điểm danh</h3>
                 </div>
                 <div className="text-right">
                   <div className="text-xl font-bold bg-gradient-to-r from-[#FF6B5A] to-[#FF8F7A] bg-clip-text text-transparent">

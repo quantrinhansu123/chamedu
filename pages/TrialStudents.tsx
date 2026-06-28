@@ -1,3 +1,4 @@
+import { doc, updateDoc, arrayUnion } from '@/src/utils/legacyFirestoreStub';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Search, Plus, Phone, FileText, X, Calendar, User, Clock, PhoneCall } from 'lucide-react';
 import { Student, StudentStatus } from '../types';
@@ -6,8 +7,6 @@ import { useClasses } from '../src/hooks/useClasses';
 import { useStaff } from '../src/hooks/useStaff';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { formatSchedule } from '../src/utils/scheduleUtils';
-import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { ModalPortal } from '@/components/modal-portal';
 
 // Extended student type for trial students
@@ -194,7 +193,7 @@ export const TrialStudents: React.FC = () => {
     }
 
     try {
-      const studentRef = doc(db, 'students', selectedStudent.id);
+      const studentRef = doc(null as any /* firebase removed */, 'students', selectedStudent.id);
       const newCall = {
         date: newCallForm.date,
         content: newCallForm.content,
@@ -456,14 +455,7 @@ export const TrialStudents: React.FC = () => {
                         >
                           Cập nhật
                         </button>
-                        {student.trialStatus !== 'Đã đăng ký' && student.trialStatus !== 'Không đăng ký' && (
-                          <button
-                            onClick={() => navigate('/finance/contracts/create', { state: { studentId: student.id } })}
-                            className="px-2 py-1 bg-green-600 text-white rounded text-xs font-medium hover:bg-green-700 transition-colors"
-                          >
-                            Tạo HĐ
-                          </button>
-                        )}
+
                       </div>
                     </td>
                   </tr>

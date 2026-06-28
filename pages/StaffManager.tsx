@@ -1,13 +1,14 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, User, Eye, EyeOff, AlertTriangle, X, Phone, Building2, Key } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Eye, EyeOff, AlertTriangle, X, Phone, Building2, Key } from 'lucide-react';
 import { Staff, StaffRole } from '../types';
 import { useStaff } from '../src/hooks/useStaff';
+import { usePermissions } from '../src/hooks/usePermissions';
 import { ImportExportButtons } from '../components/ImportExportButtons';
 import { STAFF_FIELDS, STAFF_MAPPING, prepareStaffExport } from '../src/utils/excelUtils';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { AuthService } from '../src/services/authService';
 import { ModalPortal } from '@/components/modal-portal';
+import { getCenters } from '../src/services/centerService';
 
 // Departments and positions based on Excel
 const DEPARTMENTS = ['Điều hành', 'Đào Tạo', 'Văn phòng'];
@@ -70,21 +71,23 @@ export const StaffManager: React.FC = () => {
   const [accountPassword, setAccountPassword] = useState('');
   const [accountEmail, setAccountEmail] = useState('');
   const [savingAccount, setSavingAccount] = useState(false);
+  const [selectedStaffIds, setSelectedStaffIds] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const { canDelete } = usePermissions();
+  const canDeleteStaff = canDelete('staff');
 
   const { staff, loading, createStaff, updateStaff, deleteStaff } = useStaff();
 
-  // Fetch centers from Firestore
   useEffect(() => {
     const fetchCenters = async () => {
       try {
-        const centersSnap = await getDocs(collection(db, 'centers'));
-        const centers = centersSnap.docs
-          .filter(d => d.data().status === 'Active')
-          .map(d => ({
-            id: d.id,
-            name: d.data().name || '',
-          }));
-        setCenterList(centers);
+        const centers = await getCenters();
+        setCenterList(
+          centers
+            .filter((c) => c.status === 'Active')
+            .map((c) => ({ id: c.id!, name: c.name }))
+        );
       } catch (err) {
         console.error('Error fetching centers:', err);
       }
@@ -186,6 +189,9 @@ export const StaffManager: React.FC = () => {
         return (a.name || '').localeCompare(b.name || '');
       });
   }, [staff, searchTerm, filterDepartment, filterBranch]);
+
+  const allVisibleSelected =
+    filteredStaff.length > 0 && selectedStaffIds.length === filteredStaff.length;
 
   // Open create modal
   const handleCreate = () => {
@@ -421,11 +427,47 @@ export const StaffManager: React.FC = () => {
     
     try {
       await deleteStaff(id);
+      setSelectedStaffIds(prev => prev.filter(sid => sid !== id));
       alert('Đã xóa nhân viên!');
     } catch (err) {
       console.error('Error deleting staff:', err);
       alert('Có lỗi xảy ra. Vui lòng thử lại.');
     }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedStaffIds.length === 0) {
+      alert('Vui lòng chọn ít nhất 1 nhân viên để xóa.');
+      return;
+    }
+
+    const selectedSet = new Set(selectedStaffIds);
+    const staffToDelete = filteredStaff.filter(s => selectedSet.has(s.id));
+    const namesPreview = staffToDelete
+      .slice(0, 5)
+      .map(s => s.name)
+      .join(', ');
+    const moreCount = staffToDelete.length > 5 ? ` và ${staffToDelete.length - 5} người khác` : '';
+    const confirmMsg = `Bạn có chắc chắn muốn xóa ${staffToDelete.length} nhân viên đã chọn?\n\n${namesPreview}${moreCount}\n\nThao tác này KHÔNG THỂ hoàn tác!`;
+    if (!confirm(confirmMsg)) return;
+
+    setBulkDeleting(true);
+    let deleted = 0;
+    let failed = 0;
+
+    for (const member of staffToDelete) {
+      try {
+        await deleteStaff(member.id);
+        deleted++;
+      } catch (err) {
+        console.error('Error deleting staff:', member.name, err);
+        failed++;
+      }
+    }
+
+    setBulkDeleting(false);
+    setSelectedStaffIds([]);
+    alert(`Đã xóa ${deleted} nhân viên.${failed > 0 ? ` Lỗi: ${failed}` : ''}`);
   };
 
   // Import staff from Excel
@@ -495,7 +537,7 @@ export const StaffManager: React.FC = () => {
           <h2 className="text-lg font-bold text-gray-800">Danh sách nhân viên</h2>
           <p className="text-sm text-gray-500">Quản lý thông tin nhân viên, giáo viên, trợ giảng</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap justify-end">
           <ImportExportButtons
             data={staff}
             prepareExport={prepareStaffExport}
@@ -506,6 +548,16 @@ export const StaffManager: React.FC = () => {
             templateFileName="MauNhapNhanVien"
             entityName="nhân viên"
           />
+          {canDeleteStaff && (
+            <button
+              onClick={handleBulkDelete}
+              disabled={bulkDeleting || selectedStaffIds.length === 0}
+              className="flex items-center gap-2 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors text-sm font-medium disabled:opacity-50"
+            >
+              <Trash2 size={16} />
+              {bulkDeleting ? 'Đang xóa...' : `Xóa đã chọn (${selectedStaffIds.length})`}
+            </button>
+          )}
           <button 
             onClick={handleCreate}
             className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
@@ -555,6 +607,23 @@ export const StaffManager: React.FC = () => {
         <table className="w-full text-left text-sm text-gray-600">
           <thead className="bg-gray-50 text-xs uppercase font-semibold text-gray-500">
             <tr>
+              {canDeleteStaff && (
+                <th className="px-4 py-4 w-12 text-center">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedStaffIds(filteredStaff.map(s => s.id));
+                      } else {
+                        setSelectedStaffIds([]);
+                      }
+                    }}
+                    aria-label="Chọn tất cả nhân viên"
+                    className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                </th>
+              )}
               <th className="px-6 py-4 w-16">STT</th>
               <th className="px-6 py-4">Họ tên</th>
               <th className="px-6 py-4">SĐT</th>
@@ -567,7 +636,30 @@ export const StaffManager: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {filteredStaff.length > 0 ? filteredStaff.map((s, index) => (
-              <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+              <tr
+                key={s.id}
+                className={`hover:bg-gray-50 transition-colors ${selectedStaffIds.includes(s.id) ? 'bg-red-50/50' : ''}`}
+              >
+                {canDeleteStaff && (
+                  <td className="px-4 py-4 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedStaffIds.includes(s.id)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setSelectedStaffIds(prev => {
+                          if (checked) {
+                            if (prev.includes(s.id)) return prev;
+                            return [...prev, s.id];
+                          }
+                          return prev.filter(id => id !== s.id);
+                        });
+                      }}
+                      aria-label={`Chọn nhân viên ${s.name}`}
+                      className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </td>
+                )}
                 <td className="px-6 py-4 text-gray-400">{index + 1}</td>
                 <td className="px-6 py-4">
                   <div>
@@ -633,7 +725,7 @@ export const StaffManager: React.FC = () => {
               </tr>
             )) : (
               <tr>
-                <td colSpan={8} className="px-6 py-12 text-center text-gray-400">
+                <td colSpan={canDeleteStaff ? 9 : 8} className="px-6 py-12 text-center text-gray-400">
                   Không có nhân viên nào
                 </td>
               </tr>
@@ -642,10 +734,24 @@ export const StaffManager: React.FC = () => {
         </table>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-gray-100 bg-gray-50">
+        <div className="px-6 py-3 border-t border-gray-100 bg-gray-50 flex justify-between items-center">
           <span className="text-xs text-gray-500">
             Hiển thị {filteredStaff.length} nhân viên
+            {canDeleteStaff && selectedStaffIds.length > 0 && (
+              <span className="ml-2 text-red-600 font-medium">
+                · Đã chọn {selectedStaffIds.length}
+              </span>
+            )}
           </span>
+          {canDeleteStaff && selectedStaffIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setSelectedStaffIds([])}
+              className="text-xs text-gray-500 hover:text-gray-700 underline"
+            >
+              Bỏ chọn tất cả
+            </button>
+          )}
         </div>
       </div>
 

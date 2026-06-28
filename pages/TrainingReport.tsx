@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Training Report Page
  * Báo cáo đào tạo - thống kê từ attendance, tutoring, classes
@@ -5,8 +6,6 @@
 
 import React, { useState, useEffect } from 'react';
 import { BarChart3, Users, BookOpen, Calendar, TrendingUp, Clock, Award } from 'lucide-react';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { formatCurrency } from '../src/utils/currencyUtils';
 import { getStudentSessionData } from '../src/utils/student-session-utils';
 
@@ -68,11 +67,11 @@ export const TrainingReport: React.FC = () => {
 
       // Fetch all collections
       const [classesSnap, studentsSnap, attendanceSnap, tutoringSnap, contractsSnap] = await Promise.all([
-        getDocs(collection(db, 'classes')),
-        getDocs(collection(db, 'students')),
-        getDocs(collection(db, 'attendance')),
-        getDocs(collection(db, 'tutoring')),
-        getDocs(collection(db, 'contracts')),
+        getDocs(collection(null as any /* firebase removed */, 'classes')),
+        getDocs(collection(null as any /* firebase removed */, 'students')),
+        getDocs(collection(null as any /* firebase removed */, 'attendance')),
+        getDocs(collection(null as any /* firebase removed */, 'tutoring')),
+        getDocs(collection(null as any /* firebase removed */, 'contracts')),
       ]);
 
       const classes = classesSnap.docs.map(d => ({ id: d.id, ...d.data() }));

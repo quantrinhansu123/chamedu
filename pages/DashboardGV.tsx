@@ -1,3 +1,4 @@
+import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * DashboardGV
  * Dashboard for Teachers (Giáo viên/Trợ giảng)
@@ -25,8 +26,6 @@ import {
   Cake,
   GraduationCap,
 } from 'lucide-react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
-import { db } from '../src/config/firebase';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
 import { formatCurrency } from '../src/utils/currencyUtils';
@@ -81,19 +80,19 @@ export const DashboardGV: React.FC = () => {
         const thisMonth = currentMonth + 1;
 
         // Fetch classes
-        const classesSnap = await getDocs(collection(db, 'classes'));
+        const classesSnap = await getDocs(collection(null as any /* firebase removed */, 'classes'));
         const classes = classesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
         // Fetch students
-        const studentsSnap = await getDocs(collection(db, 'students'));
+        const studentsSnap = await getDocs(collection(null as any /* firebase removed */, 'students'));
         const students = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
         // Fetch work sessions
-        const workSessionsSnap = await getDocs(collection(db, 'workSessions'));
+        const workSessionsSnap = await getDocs(collection(null as any /* firebase removed */, 'workSessions'));
         const workSessions = workSessionsSnap.docs.map(d => d.data());
 
         // Fetch attendance
-        const attendanceSnap = await getDocs(collection(db, 'studentAttendance'));
+        const attendanceSnap = await getDocs(collection(null as any /* firebase removed */, 'studentAttendance'));
         const attendanceRecords = attendanceSnap.docs.map(d => d.data());
 
         // My classes (where I'm teacher or assistant)
