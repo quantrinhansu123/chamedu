@@ -15,6 +15,7 @@ import {
   saveHomeworkRecord,
   saveHomeworkStatuses,
 } from '../src/services/homeworkService';
+import { HomeworkScoreModal } from '../src/features/homework/components';
 import {
   createLearningAssignment,
   createLearningExerciseType,
@@ -1591,6 +1592,9 @@ export const HomeworkManager: React.FC = () => {
   const [newStatusLabel, setNewStatusLabel] = useState('');
   const [newStatusColor, setNewStatusColor] = useState('bg-gray-500');
 
+  // Score entry modal
+  const [showScoreModal, setShowScoreModal] = useState(false);
+
   useEffect(() => {
     setActiveTab(searchParams.get('tab') === 'materials' ? 'materials' : 'homework');
   }, [searchParams]);
@@ -1835,9 +1839,15 @@ export const HomeworkManager: React.FC = () => {
     }));
   };
 
-  // Update score
+  // Update score (0–10, blank = null)
   const handleScoreChange = (studentId: string, homeworkId: string, score: string) => {
-    const scoreNum = score === '' ? null : parseFloat(score);
+    let scoreNum: number | null = null;
+    if (score !== '') {
+      const parsed = parseFloat(score);
+      if (!Number.isNaN(parsed)) {
+        scoreNum = Math.min(10, Math.max(0, parsed));
+      }
+    }
     setStudentRecords(prev => prev.map(record => {
       if (record.studentId !== studentId) return record;
       return {
@@ -1899,6 +1909,7 @@ export const HomeworkManager: React.FC = () => {
       }
       
       alert('Đã lưu thành công!');
+      setShowScoreModal(false);
     } catch (err: any) {
       console.error('Error saving homework:', err);
       alert('Có lỗi xảy ra khi lưu: ' + (err.message || err));
@@ -2179,7 +2190,19 @@ export const HomeworkManager: React.FC = () => {
           {/* Homework Management */}
           {selectedSessionId && (
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4">Khai báo Bài tập</h3>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <h3 className="text-lg font-semibold text-gray-800">Khai báo Bài tập</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowScoreModal(true)}
+                  disabled={homeworks.length === 0 || studentRecords.length === 0}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2 text-sm font-medium"
+                  title={homeworks.length === 0 ? 'Thêm bài tập trước' : 'Nhập điểm BTVN'}
+                >
+                  <Pencil size={16} />
+                  Nhập điểm BTVN
+                </button>
+              </div>
               
               {/* Add Homework */}
               <div className="flex gap-2 mb-4">
@@ -2271,6 +2294,11 @@ export const HomeworkManager: React.FC = () => {
                                         <option key={s.value} value={s.value}>{s.label}</option>
                                       ))}
                                     </select>
+                                    {hwRecord.score !== null && hwRecord.score !== undefined && (
+                                      <p className="mt-1 text-xs font-semibold text-indigo-600">
+                                        Điểm: {hwRecord.score}
+                                      </p>
+                                    )}
                                   </td>
                                 );
                               })}
@@ -2339,6 +2367,26 @@ export const HomeworkManager: React.FC = () => {
           <h3 className="text-lg font-medium text-gray-600 mb-2">Chọn lớp học</h3>
           <p className="text-gray-400">Vui lòng chọn lớp học để quản lý bài tập về nhà</p>
         </div>
+      )}
+
+      {/* Homework Score Entry Modal */}
+      {showScoreModal && (
+        <HomeworkScoreModal
+          className={classes.find(c => c.id === selectedClassId)?.name || ''}
+          sessionLabel={(() => {
+            const session = sessions.find(s => s.id === selectedSessionId);
+            return session ? `Buổi ${session.sessionNumber} · ${session.date}` : '';
+          })()}
+          homeworks={homeworks}
+          studentRecords={studentRecords}
+          statuses={globalStatuses}
+          saving={saving}
+          onStatusChange={handleStatusChange}
+          onScoreChange={handleScoreChange}
+          onNoteChange={handleNoteChange}
+          onSave={handleSave}
+          onClose={() => setShowScoreModal(false)}
+        />
       )}
 
       {/* Bulk Homework Modal - Multi-select classes */}

@@ -35,8 +35,8 @@ import { ModalPortal } from '@/components/modal-portal';
 
 // Constants for table column count
 const STUDENT_TABLE_COLUMNS = {
-  base: 10,
-  withDropoutReason: 11
+  base: 12,
+  withDropoutReason: 13
 };
 
 interface StudentManagerProps {
@@ -154,63 +154,78 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
     return allStudents; // TODO: Implement proper class-based filtering
   }, [allStudents, onlyOwnClasses, staffData]);
 
+  const matchesStudentFilters = (student: Student, includeStatus: boolean) => {
+    if (includeStatus && filterStatus !== 'ALL') {
+      const normalizedStatus = normalizeStudentStatus(student.status);
+      if (normalizedStatus !== filterStatus) return false;
+    }
+
+    if (searchTerm) {
+      const search = searchTerm.toLowerCase();
+      const matchesSearch =
+        student.fullName?.toLowerCase().includes(search) ||
+        student.code?.toLowerCase().includes(search) ||
+        student.phone?.includes(search) ||
+        student.parentName?.toLowerCase().includes(search);
+      if (!matchesSearch) return false;
+    }
+
+    if (birthdayMonth) {
+      const studentMonth = new Date(student.dob).getMonth() + 1;
+      if (studentMonth !== parseInt(birthdayMonth)) return false;
+    }
+
+    if (filterClass === 'NO_CLASS') {
+      if (student.classId || student.class) return false;
+    } else if (filterClass !== 'ALL') {
+      const selectedClass = classes.find(c => c.id === filterClass);
+      const selectedClassName = selectedClass?.name || '';
+      const normalize = (s: string) => s?.toLowerCase().replace(/\s+/g, '').trim() || '';
+      const studentClassName = normalize(student.class || '');
+      const targetClassName = normalize(selectedClassName);
+      const matchesClass =
+        student.classId === filterClass ||
+        studentClassName === targetClassName ||
+        (student.classIds && student.classIds.includes(filterClass));
+      if (!matchesClass) return false;
+    }
+
+    if (filterBranch !== 'ALL' && student.branch !== filterBranch) return false;
+
+    return true;
+  };
+
+  const studentsForStats = useMemo(() => {
+    return students.filter(student => matchesStudentFilters(student, false));
+  }, [students, searchTerm, birthdayMonth, filterClass, filterBranch, classes]);
+
   const filteredStudents = useMemo(() => {
-    return students.filter(student => {
-      // Filter by status (client-side to handle legacy status values like "Đã nghỉ")
-      let matchesStatus = true;
-      if (filterStatus !== 'ALL') {
-        const normalizedStatus = normalizeStudentStatus(student.status);
-        matchesStatus = normalizedStatus === filterStatus;
-      }
-      
-      // Filter by search term
-      let matchesSearch = true;
-      if (searchTerm) {
-        const search = searchTerm.toLowerCase();
-        matchesSearch = 
-          student.fullName?.toLowerCase().includes(search) ||
-          student.code?.toLowerCase().includes(search) ||
-          student.phone?.includes(search) ||
-          student.parentName?.toLowerCase().includes(search);
-      }
-      
-      // Filter by birthday month
-      let matchesBirthday = true;
-      if (birthdayMonth) {
-        const studentMonth = new Date(student.dob).getMonth() + 1;
-        matchesBirthday = studentMonth === parseInt(birthdayMonth);
-      }
-
-      // Filter by class - check cả classId và class name
-      let matchesClass = true;
-      if (filterClass === 'NO_CLASS') {
-        matchesClass = !student.classId && !student.class;
-      } else if (filterClass !== 'ALL') {
-        // Tìm class được chọn để lấy tên
-        const selectedClass = classes.find(c => c.id === filterClass);
-        const selectedClassName = selectedClass?.name || '';
-        
-        // Normalize để so sánh linh hoạt (bỏ HẾT khoảng trắng, lowercase)
-        // VD: "Pre Starters 26" → "prestarters26" = "Prestarters 26" → "prestarters26"
-        const normalize = (s: string) => s?.toLowerCase().replace(/\s+/g, '').trim() || '';
-        const studentClassName = normalize(student.class || '');
-        const targetClassName = normalize(selectedClassName);
-        
-        // So sánh theo classId HOẶC class name (cho data import từ Excel)
-        matchesClass = student.classId === filterClass || 
-                       studentClassName === targetClassName ||
-                       (student.classIds && student.classIds.includes(filterClass));
-      }
-
-      // Filter by branch
-      let matchesBranch = true;
-      if (filterBranch !== 'ALL') {
-        matchesBranch = student.branch === filterBranch;
-      }
-      
-      return matchesStatus && matchesSearch && matchesBirthday && matchesClass && matchesBranch;
-    });
+    return students.filter(student => matchesStudentFilters(student, true));
   }, [students, filterStatus, searchTerm, birthdayMonth, filterClass, filterBranch, classes]);
+
+  const pageStats = useMemo(() => {
+    const stats = {
+      total: studentsForStats.length,
+      trial: 0,
+      active: 0,
+      debt: 0,
+      reserved: 0,
+      dropped: 0,
+      expiredFee: 0,
+    };
+
+    studentsForStats.forEach(student => {
+      const status = normalizeStudentStatus(student.status);
+      if (status === StudentStatus.TRIAL) stats.trial++;
+      else if (status === StudentStatus.ACTIVE) stats.active++;
+      else if (status === StudentStatus.DEBT || status === StudentStatus.CONTRACT_DEBT) stats.debt++;
+      else if (status === StudentStatus.RESERVED) stats.reserved++;
+      else if (status === StudentStatus.DROPPED) stats.dropped++;
+      else if (status === StudentStatus.EXPIRED_FEE) stats.expiredFee++;
+    });
+
+    return stats;
+  }, [studentsForStats]);
 
   useEffect(() => {
     const visibleIds = new Set(filteredStudents.map(s => s.id));
@@ -622,6 +637,31 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
         </div>
       </div>
 
+      {/* Stats Ribbon */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 bg-gray-50 rounded-lg border border-gray-200 divide-x divide-y sm:divide-y-0 divide-gray-200">
+        <div className="flex items-center justify-center p-3">
+          <span className="text-blue-600 font-bold text-sm">Tổng: {pageStats.total}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-purple-600 font-bold text-sm">Học thử: {pageStats.trial}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-green-600 font-bold text-sm">Đang học: {pageStats.active}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-red-600 font-bold text-sm">Nợ phí: {pageStats.debt}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-orange-600 font-bold text-sm">Bảo lưu: {pageStats.reserved}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-amber-600 font-bold text-sm">Hết phí: {pageStats.expiredFee}</span>
+        </div>
+        <div className="flex items-center justify-center p-3">
+          <span className="text-gray-500 font-bold text-sm">Nghỉ học: {pageStats.dropped}</span>
+        </div>
+      </div>
+
       {/* Data Integrity Warning */}
       {studentsWithoutClass.length > 0 && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
@@ -679,7 +719,9 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                     <th className="px-4 py-3 bg-gray-50">Học viên</th>
                     <th className="px-4 py-3 bg-gray-50">Phụ huynh</th>
                     <th className="px-4 py-3 bg-gray-50">Lớp học</th>
+                    <th className="px-4 py-3 bg-gray-50 text-center">Đăng ký</th>
                     <th className="px-4 py-3 bg-gray-50 text-center">Đã điểm danh</th>
+                    <th className="px-4 py-3 bg-gray-50 text-center">Còn lại</th>
                     <th className="px-4 py-3 bg-gray-50 text-center">Ngày BĐ</th>
                     <th className="px-4 py-3 bg-gray-50">Trạng thái</th>
                     {filterStatus === StudentStatus.DROPPED && (
@@ -748,12 +790,24 @@ export const StudentManager: React.FC<StudentManagerProps> = ({
                     <td className="px-4 py-3 text-xs text-gray-600">
                        <p>{student.class || '---'}</p>
                     </td>
-                    {/* Đã điểm danh (hệ thống mới) */}
-                    <td className="px-4 py-3 text-center">
-                       <span className="font-semibold text-green-600">
-                         {getStudentSessionData(student).attendedAll}
-                       </span>
-                    </td>
+                    {(() => {
+                      const { registered, attendedAll, remaining } = getStudentSessionData(student);
+                      return (
+                        <>
+                          <td className="px-4 py-3 text-center">
+                            <span className="font-semibold text-blue-600">{registered}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className="font-semibold text-green-600">{attendedAll}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`font-semibold ${remaining < 0 ? 'text-red-600' : remaining <= 3 ? 'text-orange-600' : 'text-gray-700'}`}>
+                              {remaining}
+                            </span>
+                          </td>
+                        </>
+                      );
+                    })()}
                     <td className="px-4 py-3 text-center text-xs text-gray-600">
                        {student.startDate ? new Date(student.startDate).toLocaleDateString('vi-VN') : '---'}
                     </td>

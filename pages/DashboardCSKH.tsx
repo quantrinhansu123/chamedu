@@ -427,7 +427,7 @@ export const DashboardCSKH: React.FC = () => {
         let revenueData: { month: string; expected: number; actual: number }[] = [];
 
         if (isCSKHLeader) {
-          const revenueSummary = await getRevenueSummary(currentYear, selectedBranch);
+          const revenueSummary = await getRevenueSummary(currentYear, selectedBranch, thisMonth);
           const currentMonthLabel = `T${thisMonth}`;
           const currentMonthRevenue = revenueSummary.byMonth.find((item) => item.month === currentMonthLabel);
 

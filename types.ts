@@ -21,9 +21,43 @@ export enum AttendanceStatus {
   ON_TIME = 'Đúng giờ',
   LATE = 'Trễ giờ',
   ABSENT = 'Vắng',
-  RESERVED = 'Bảo lưu',
+  /** Nghỉ có phép (trước đây: Bảo lưu) */
+  RESERVED = 'Nghỉ có phép',
+  /** Legacy — không còn dùng khi điểm danh mới */
   TUTORED = 'Đã bồi'
 }
+
+/** Nghỉ có phép + giá trị cũ 'Bảo lưu' trong điểm danh */
+export const isExcusedAttendanceStatus = (status?: string | null): boolean =>
+  status === AttendanceStatus.RESERVED || status === 'Bảo lưu' || status === 'Nghỉ có phép';
+
+/**
+ * Trạng thái tính học phí theo học viên (xuất học phí tháng).
+ * Chỉ buổi có mặt / trễ / đã bồi (legacy). Nghỉ có phép và Vắng = 0đ.
+ */
+export const isBillableAttendanceStatus = (status?: string | null): boolean => {
+  if (!status) return false;
+  if (isExcusedAttendanceStatus(status)) return false;
+  return [
+    AttendanceStatus.ON_TIME,
+    AttendanceStatus.LATE,
+    AttendanceStatus.TUTORED,
+    'Đúng giờ',
+    'Trễ giờ',
+    'Đi trễ',
+    'Có mặt',
+    'Đã bồi',
+  ].includes(status);
+};
+
+/**
+ * Doanh thu buổi trên trang điểm danh: mọi HS đã điểm danh trừ Nghỉ có phép.
+ * Nghỉ có phép / Bảo lưu cũ → không tính tiền buổi.
+ */
+export const isSessionRevenueAttendanceStatus = (status?: string | null): boolean => {
+  if (!status || status === AttendanceStatus.PENDING) return false;
+  return !isExcusedAttendanceStatus(status);
+};
 
 export interface ClassSession {
   id: string;
@@ -402,6 +436,9 @@ export interface AttendanceRecord {
   absent: number;
   reserved: number;
   tutored: number;
+  unitPrice?: number;
+  billableStudents?: number;
+  sessionAmount?: number;
   status: 'Đã điểm danh' | 'Chưa điểm danh' | 'LỊCH NGHỈ CHUNG';
   holidayId?: string;  // Reference to holiday that created this record
   holidayName?: string; // Holiday name for display
@@ -438,6 +475,8 @@ export interface StudentAttendance {
   lessonExerciseTags?: string;
   /** Dạng bài kiểm tra ngày sau (JSON CheckExerciseTagsData) */
   checkExerciseTags?: string;
+  /** Nhiệm vụ giao cho học sinh trong buổi */
+  task?: string;
 
   // Thông tin điểm số buổi học
   homeworkCompletion?: number;  // % BTVN (0-100)

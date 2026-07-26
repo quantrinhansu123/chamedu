@@ -34,6 +34,7 @@ const subItemToModule: Record<string, ModuleKey> = {
   'holidays': 'holidays',
   'attendance': 'attendance',
   'tutoring': 'tutoring',
+  'tuition-export': 'invoices',
   'homework': 'homework',
   'materials': 'homework',
   'attendance-history': 'attendance_history',
@@ -71,7 +72,7 @@ const subItemToModule: Record<string, ModuleKey> = {
 
 // Map parent menu to required modules (at least one must be visible)
 const parentMenuModules: Record<string, ModuleKey[]> = {
-  'training': ['classes', 'schedule', 'attendance', 'tutoring', 'homework', 'attendance_history', 'enrollment_history'],
+  'training': ['classes', 'schedule', 'attendance', 'tutoring', 'homework', 'attendance_history', 'enrollment_history', 'invoices'],
   'customers': ['students', 'parents', 'students_dropped', 'students_reserved', 'feedback', 'students_trial'],
   'business': ['leads', 'campaigns'],
   'hr': ['staff', 'salary_config', 'work_confirmation', 'leave_request', 'salary_teacher', 'salary_staff', 'reward_penalty'],
@@ -102,6 +103,7 @@ const menuItems: MenuItem[] = [
       { id: 'schedule', label: 'Thời khóa biểu', path: '/training/schedule', icon: ChevronRight },
       { id: 'attendance', label: 'Điểm danh', path: '/training/attendance', icon: ChevronRight },
       { id: 'tutoring', label: 'Lịch bồi', path: '/training/tutoring', icon: ChevronRight },
+      { id: 'tuition-export', label: 'Xuất học phí', path: '/training/tuition-export', icon: ChevronRight },
       { id: 'homework', label: 'Bài tập về nhà', path: '/training/homework', icon: ChevronRight },
       { id: 'materials', label: 'Học liệu', path: '/training/homework?tab=materials', icon: ChevronRight },
       { id: 'attendance-history', label: 'Lịch sử điểm danh', path: '/training/attendance-history', icon: ChevronRight },

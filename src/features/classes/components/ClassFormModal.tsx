@@ -9,6 +9,7 @@ import { X, Plus, AlertTriangle } from 'lucide-react';
 import { ClassStatus, ClassModel, DayScheduleConfig } from '@/types';
 import { CLASS_COLOR_PALETTE, hashClassName } from '@/pages/Schedule';
 import { parseScheduleDays } from '@/src/utils/scheduleUtils';
+import { buildScheduleDetailsFromClass, formatClassScheduleString } from '@/src/utils/classScheduleUtils';
 import { calcMinutesBetween } from '@/src/utils/timeUtils';
 import { ModalPortal } from '@/components/modal-portal';
 import { getCenters } from '@/src/services/centerService';
@@ -25,16 +26,7 @@ export interface ClassFormModalProps {
 }
 
 export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClose, onSubmit }) => {
-  const initScheduleDetails = (): Record<string, DayScheduleConfig> => {
-    if (classData?.scheduleDetails && classData.scheduleDetails.length > 0) {
-      const details: Record<string, DayScheduleConfig> = {};
-      classData.scheduleDetails.forEach(d => {
-        details[d.dayOfWeek] = d;
-      });
-      return details;
-    }
-    return {};
-  };
+  const initialSchedule = buildScheduleDetailsFromClass(classData?.schedule, classData?.scheduleDetails);
 
   const formatNumber = (num: number | undefined) => {
     if (num === undefined || num === 0) return '';
@@ -59,9 +51,9 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     totalSessions: classData?.totalSessions ?? 48,
     tuitionFee: classData?.tuitionFee || 0,
     schedule: classData?.schedule || '',
-    scheduleStartTime: '',
-    scheduleEndTime: '',
-    scheduleDays: [] as string[],
+    scheduleStartTime: initialSchedule.startTime,
+    scheduleEndTime: initialSchedule.endTime,
+    scheduleDays: initialSchedule.days,
     room: classData?.room || '',
     createdDate: classData?.createdDate || new Date().toISOString().split('T')[0],
     startDate: classData?.startDate || new Date().toISOString().split('T')[0],
@@ -87,7 +79,7 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     color: classData?.color ?? -1,
   });
 
-  const [scheduleDetailsByDay, setScheduleDetailsByDay] = useState<Record<string, DayScheduleConfig>>(initScheduleDetails);
+  const [scheduleDetailsByDay, setScheduleDetailsByDay] = useState<Record<string, DayScheduleConfig>>(initialSchedule.detailsByDay);
 
   // Fetch actual session count for existing classes without totalSessions
   useEffect(() => {
@@ -253,49 +245,18 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     { value: 'CN', label: 'Chủ nhật' },
   ];
 
-  // Parse existing schedule when editing
+  // Reload schedule when opening a different class for edit
   useEffect(() => {
-    if (classData?.scheduleDetails && classData.scheduleDetails.length > 0) {
-      const sortedDetails = [...classData.scheduleDetails].sort((a, b) => {
-        const aValue = a.dayOfWeek === 'CN' ? 8 : parseInt(a.dayOfWeek || '0', 10);
-        const bValue = b.dayOfWeek === 'CN' ? 8 : parseInt(b.dayOfWeek || '0', 10);
-        return aValue - bValue;
-      });
-      const firstDetail = sortedDetails[0];
-
-      setFormData(prev => ({
-        ...prev,
-        scheduleStartTime: firstDetail?.startTime || prev.scheduleStartTime,
-        scheduleEndTime: firstDetail?.endTime || prev.scheduleEndTime,
-        scheduleDays: sortedDetails.map(detail => detail.dayOfWeek),
-      }));
-      return;
-    }
-
-    if (classData?.schedule) {
-      const match = classData.schedule.match(/(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s*(.*)/);
-      if (match) {
-        const startTime = match[1];
-        const endTime = match[2];
-        const daysStr = match[3];
-
-        const days: string[] = [];
-        if (daysStr.includes('Chủ nhật') || daysStr.includes('CN')) days.push('CN');
-        for (let i = 2; i <= 7; i++) {
-          if (daysStr.includes(`Thứ ${i}`) || daysStr.includes(`, ${i}`) || daysStr.match(new RegExp(`\\b${i}\\b`))) {
-            days.push(i.toString());
-          }
-        }
-
-        setFormData(prev => ({
-          ...prev,
-          scheduleStartTime: startTime,
-          scheduleEndTime: endTime,
-          scheduleDays: days,
-        }));
-      }
-    }
-  }, [classData]);
+    const parsed = buildScheduleDetailsFromClass(classData?.schedule, classData?.scheduleDetails);
+    setFormData((prev) => ({
+      ...prev,
+      schedule: classData?.schedule || '',
+      scheduleStartTime: parsed.startTime,
+      scheduleEndTime: parsed.endTime,
+      scheduleDays: parsed.days,
+    }));
+    setScheduleDetailsByDay(parsed.detailsByDay);
+  }, [classData?.id]);
 
   // Auto-fill empty time fields from schedule times (for classes created before time range feature)
   useEffect(() => {
@@ -391,41 +352,61 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     return { startTime: classStartTime, endTime: classEndTime };
   };
 
-  const normalizeDayScheduleConfig = (day: string, config?: Partial<DayScheduleConfig>): DayScheduleConfig => {
-    const startTime = config?.startTime || formData.scheduleStartTime || '18:00';
-    const endTime = config?.endTime || formData.scheduleEndTime || '19:30';
-    const teacherTime = getRoleTimeWithinClassTime(
-      config?.teacherStartTime ?? formData.teacherStartTime,
-      config?.teacherEndTime ?? formData.teacherEndTime,
-      startTime,
-      endTime
-    );
-    const assistantTime = getRoleTimeWithinClassTime(
-      config?.assistantStartTime ?? formData.assistantStartTime,
-      config?.assistantEndTime ?? formData.assistantEndTime,
-      startTime,
-      endTime
-    );
-
+  const getDayConfig = (day: string): DayScheduleConfig => {
+    const stored = scheduleDetailsByDay[day];
     return {
       dayOfWeek: day,
       dayLabel: getDayLabel(day),
-      startTime,
-      endTime,
-      room: config?.room ?? formData.room ?? '',
-      teacher: config?.teacher ?? formData.teacher ?? '',
-      teacherStartTime: teacherTime.startTime,
-      teacherEndTime: teacherTime.endTime,
-      teacherDuration: calcMinutesBetween(teacherTime.startTime, teacherTime.endTime),
-      assistant: config?.assistant ?? formData.assistant ?? '',
-      assistantStartTime: assistantTime.startTime,
-      assistantEndTime: assistantTime.endTime,
-      assistantDuration: calcMinutesBetween(assistantTime.startTime, assistantTime.endTime),
-      foreignTeacher: config?.foreignTeacher ?? formData.foreignTeacher ?? '',
-      foreignTeacherStartTime: config?.foreignTeacherStartTime,
-      foreignTeacherEndTime: config?.foreignTeacherEndTime,
-      foreignTeacherDuration: config?.foreignTeacherDuration,
+      startTime: stored?.startTime || formData.scheduleStartTime || '18:00',
+      endTime: stored?.endTime || formData.scheduleEndTime || '19:30',
+      room: stored?.room ?? formData.room ?? '',
+      teacher: stored?.teacher ?? formData.teacher ?? '',
+      teacherStartTime: stored?.teacherStartTime,
+      teacherEndTime: stored?.teacherEndTime,
+      teacherDuration: stored?.teacherDuration,
+      assistant: stored?.assistant ?? formData.assistant ?? '',
+      assistantStartTime: stored?.assistantStartTime,
+      assistantEndTime: stored?.assistantEndTime,
+      assistantDuration: stored?.assistantDuration,
+      foreignTeacher: stored?.foreignTeacher ?? formData.foreignTeacher ?? '',
+      foreignTeacherStartTime: stored?.foreignTeacherStartTime,
+      foreignTeacherEndTime: stored?.foreignTeacherEndTime,
+      foreignTeacherDuration: stored?.foreignTeacherDuration,
     };
+  };
+
+  const applyGlobalClassTime = (field: 'startTime' | 'endTime', value: string) => {
+    setFormData((prev) => {
+      const nextForm = {
+        ...prev,
+        scheduleStartTime: field === 'startTime' ? value : prev.scheduleStartTime,
+        scheduleEndTime: field === 'endTime' ? value : prev.scheduleEndTime,
+      };
+      setScheduleDetailsByDay((prevDetails) => {
+        const next = { ...prevDetails };
+        prev.scheduleDays.forEach((day) => {
+          const existing = next[day];
+          next[day] = {
+            dayOfWeek: day,
+            dayLabel: getDayLabel(day),
+            startTime: field === 'startTime' ? value : (existing?.startTime || nextForm.scheduleStartTime),
+            endTime: field === 'endTime' ? value : (existing?.endTime || nextForm.scheduleEndTime),
+            room: existing?.room ?? prev.room ?? '',
+            teacher: existing?.teacher ?? prev.teacher ?? '',
+            teacherStartTime: existing?.teacherStartTime,
+            teacherEndTime: existing?.teacherEndTime,
+            assistant: existing?.assistant ?? prev.assistant ?? '',
+            assistantStartTime: existing?.assistantStartTime,
+            assistantEndTime: existing?.assistantEndTime,
+            foreignTeacher: existing?.foreignTeacher ?? prev.foreignTeacher ?? '',
+            foreignTeacherStartTime: existing?.foreignTeacherStartTime,
+            foreignTeacherEndTime: existing?.foreignTeacherEndTime,
+          };
+        });
+        return next;
+      });
+      return nextForm;
+    });
   };
 
   // Toggle day selection
@@ -452,7 +433,7 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
     } else {
       setScheduleDetailsByDay(prev => ({
         ...prev,
-        [day]: normalizeDayScheduleConfig(day)
+        [day]: getDayConfig(day),
       }));
     }
   };
@@ -469,33 +450,31 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
   };
 
   const updateDayClassTime = (day: string, field: 'startTime' | 'endTime', value: string) => {
-    setScheduleDetailsByDay(prev => {
-      const currentConfig = normalizeDayScheduleConfig(day, prev[day]);
-      const updatedConfig = {
-        ...currentConfig,
+    setScheduleDetailsByDay(prev => ({
+      ...prev,
+      [day]: {
+        ...getDayConfig(day),
+        ...prev[day],
         [field]: value,
-      };
-      return {
-        ...prev,
-        [day]: normalizeDayScheduleConfig(day, updatedConfig),
-      };
-    });
+      },
+    }));
   };
 
   // Copy settings from one day to all other days
   const copyToAllDays = (sourceDay: string) => {
-    const source = scheduleDetailsByDay[sourceDay];
+    const source = getDayConfig(sourceDay);
     if (!source) return;
 
     setScheduleDetailsByDay(prev => {
       const newDetails = { ...prev };
       formData.scheduleDays.forEach(day => {
         if (day !== sourceDay) {
-          newDetails[day] = normalizeDayScheduleConfig(day, {
+          newDetails[day] = {
+            ...getDayConfig(day),
             ...source,
             dayOfWeek: day,
             dayLabel: getDayLabel(day),
-          });
+          };
         }
       });
       return newDetails;
@@ -630,13 +609,32 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
       setRoomConflictError(conflictError);
     }
 
-    const scheduleDetailsArray: DayScheduleConfig[] = formData.scheduleDays.map(day =>
-      normalizeDayScheduleConfig(day, scheduleDetailsByDay[day])
-    );
+    const scheduleDetailsArray: DayScheduleConfig[] = formData.scheduleDays.map((day) => {
+      const config = getDayConfig(day);
+      const teacherTime = getRoleTimeWithinClassTime(
+        config.teacherStartTime ?? formData.teacherStartTime,
+        config.teacherEndTime ?? formData.teacherEndTime,
+        config.startTime,
+        config.endTime
+      );
+      const assistantTime = getRoleTimeWithinClassTime(
+        config.assistantStartTime ?? formData.assistantStartTime,
+        config.assistantEndTime ?? formData.assistantEndTime,
+        config.startTime,
+        config.endTime
+      );
+      return {
+        ...config,
+        teacherStartTime: teacherTime.startTime,
+        teacherEndTime: teacherTime.endTime,
+        teacherDuration: calcMinutesBetween(teacherTime.startTime, teacherTime.endTime),
+        assistantStartTime: assistantTime.startTime,
+        assistantEndTime: assistantTime.endTime,
+        assistantDuration: calcMinutesBetween(assistantTime.startTime, assistantTime.endTime),
+      };
+    });
     const schedule = scheduleDetailsArray.length > 0
-      ? scheduleDetailsArray
-          .map(detail => `${detail.startTime}-${detail.endTime} ${detail.dayLabel || getDayLabel(detail.dayOfWeek)}`)
-          .join('; ')
+      ? formatClassScheduleString(scheduleDetailsArray)
       : formData.schedule;
 
     const submitData: any = {
@@ -838,6 +836,36 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
               </div>
             </div>
 
+            {/* Thời gian học chung */}
+            {formData.scheduleDays.length > 0 && (
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Thời gian học</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Giờ bắt đầu</label>
+                    <input
+                      type="time"
+                      step={900}
+                      value={formData.scheduleStartTime}
+                      onChange={(e) => applyGlobalClassTime('startTime', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Giờ kết thúc</label>
+                    <input
+                      type="time"
+                      step={900}
+                      value={formData.scheduleEndTime}
+                      onChange={(e) => applyGlobalClassTime('endTime', e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Áp dụng cho tất cả ngày đã chọn. Chỉnh riêng từng ngày bên dưới nếu cần.</p>
+              </div>
+            )}
+
             {/* Teacher allocation section */}
             <div className="col-span-2 border-t pt-4 mt-2">
               <div className="mb-3">
@@ -851,7 +879,7 @@ export const ClassFormModal: React.FC<ClassFormModalProps> = ({ classData, onClo
                     <>
                       <p className="text-xs text-gray-500">Cấu hình giáo viên cho từng ngày học</p>
                       {formData.scheduleDays.map((day, idx) => {
-                        const dayConfig = normalizeDayScheduleConfig(day, scheduleDetailsByDay[day]);
+                        const dayConfig = getDayConfig(day);
                         return (
                           <div key={day} className="bg-gray-50 rounded-lg p-3 border border-gray-200">
                             <div className="flex items-center justify-between mb-2">

@@ -698,6 +698,23 @@ export const AttendanceHistory: React.FC = () => {
   const totalTutored = attendanceRecords.reduce((sum, r) => sum + (r.tutored || 0), 0);
   const attendanceRate = totalStudents > 0 ? Math.round((totalPresent / totalStudents) * 100) : 0;
   const totalRecords = attendanceRecords.filter(r => r.status === 'Đã điểm danh').length;
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat('vi-VN').format(Math.round(Number(value) || 0));
+
+  const getClassTuitionFee = (record: AttendanceRecord) => {
+    const classInfo = allClasses.find(c => c.id === record.classId || c.name === record.className);
+    return Number(classInfo?.tuitionFee || 0);
+  };
+
+  const getRecordAmount = (record: AttendanceRecord) => {
+    const present = Number(record.present || 0);
+    const tuitionFee = getClassTuitionFee(record);
+    if (tuitionFee > 0 && present > 0) return tuitionFee * present;
+    return Number(record.sessionAmount || 0);
+  };
+
+  const totalAttendanceAmount = attendanceRecords.reduce((sum, record) => sum + getRecordAmount(record), 0);
   
   // Calculate percentages for status bar
   const getPercent = (value: number) => totalStudents > 0 ? Math.round((value / totalStudents) * 100) : 0;
@@ -768,53 +785,31 @@ export const AttendanceHistory: React.FC = () => {
              </div>
            </div>
 
-           {/* Đã bồi - Tutored */}
-           <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+           {/* Nghỉ có phép */}
+           <div className="flex items-center gap-3 p-3 bg-orange-50 rounded-lg">
              <div className="relative w-14 h-14 flex-shrink-0">
                <svg className="w-14 h-14 transform -rotate-90">
-                 <circle cx="28" cy="28" r="24" stroke="#dbeafe" strokeWidth="5" fill="none" />
+                 <circle cx="28" cy="28" r="24" stroke="#ffedd5" strokeWidth="5" fill="none" />
                  <circle 
                    cx="28" cy="28" r="24" 
-                   stroke="#3b82f6" strokeWidth="5" fill="none"
-                   strokeDasharray={`${getPercent(totalTutored) * 1.508} 150.8`}
-                   strokeLinecap="round"
-                 />
-               </svg>
-               <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-blue-600">
-                 {getPercent(totalTutored)}%
-               </span>
-             </div>
-             <div>
-               <p className="text-sm font-medium text-blue-800">Đã bồi</p>
-               <p className="text-xl font-bold text-blue-600">{totalTutored}<span className="text-sm text-blue-500">/{totalStudents}</span></p>
-             </div>
-           </div>
-
-           {/* Bảo lưu - Reserved */}
-           <div className="flex items-center gap-3 p-3 bg-purple-50 rounded-lg">
-             <div className="relative w-14 h-14 flex-shrink-0">
-               <svg className="w-14 h-14 transform -rotate-90">
-                 <circle cx="28" cy="28" r="24" stroke="#f3e8ff" strokeWidth="5" fill="none" />
-                 <circle 
-                   cx="28" cy="28" r="24" 
-                   stroke="#a855f7" strokeWidth="5" fill="none"
+                   stroke="#f97316" strokeWidth="5" fill="none"
                    strokeDasharray={`${getPercent(totalReserved) * 1.508} 150.8`}
                    strokeLinecap="round"
                  />
                </svg>
-               <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-purple-600">
+               <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-orange-600">
                  {getPercent(totalReserved)}%
                </span>
              </div>
              <div>
-               <p className="text-sm font-medium text-purple-800">Bảo lưu</p>
-               <p className="text-xl font-bold text-purple-600">{totalReserved}<span className="text-sm text-purple-500">/{totalStudents}</span></p>
+               <p className="text-sm font-medium text-orange-800">Nghỉ có phép</p>
+               <p className="text-xl font-bold text-orange-600">{totalReserved}<span className="text-sm text-orange-500">/{totalStudents}</span></p>
              </div>
            </div>
          </div>
        </div>
 
-       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
                 <div className="p-3 bg-indigo-100 text-indigo-600 rounded-lg">
                     <ClipboardList size={24} />
@@ -840,6 +835,15 @@ export const AttendanceHistory: React.FC = () => {
                 <div>
                     <p className="text-sm text-gray-500 font-medium">Tổng lượt vắng</p>
                     <p className="text-2xl font-bold text-gray-900">{totalAbsent}</p>
+                </div>
+            </div>
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="p-3 bg-emerald-100 text-emerald-600 rounded-lg">
+                    <BarChart2 size={24} />
+                </div>
+                <div>
+                    <p className="text-sm text-gray-500 font-medium">Tổng tiền</p>
+                    <p className="text-2xl font-bold text-gray-900">{formatCurrency(totalAttendanceAmount)} đ</p>
                 </div>
             </div>
        </div>
@@ -1079,8 +1083,9 @@ export const AttendanceHistory: React.FC = () => {
                     <option value="Đúng giờ">Đúng giờ</option>
                     <option value="Trễ giờ">Trễ giờ</option>
                     <option value="Vắng">Vắng</option>
-                    <option value="Bảo lưu">Bảo lưu</option>
-                    <option value="Đã bồi">Đã bồi</option>
+                    <option value="Nghỉ có phép">Nghỉ có phép</option>
+                    <option value="Bảo lưu">Bảo lưu (cũ)</option>
+                    <option value="Đã bồi">Đã bồi (cũ)</option>
                   </select>
                 </div>
               </div>
@@ -1164,6 +1169,7 @@ export const AttendanceHistory: React.FC = () => {
               <th className="px-6 py-4">
                 {filterStatus ? `Số HV ${filterStatus}` : 'Trạng thái'}
               </th>
+              <th className="px-6 py-4">Số tiền</th>
               <th className="px-6 py-4 text-right">Hành động</th>
             </tr>
           </thead>
@@ -1176,6 +1182,8 @@ export const AttendanceHistory: React.FC = () => {
               const totalStudents = record.totalStudents || (record as any).total || 0;
               const present = record.present || (record as any).presentCount || 0;
               const absent = record.absent || (record as any).absentCount || 0;
+              const tuitionFee = getClassTuitionFee(record);
+              const recordAmount = getRecordAmount(record);
               const status = record.status || (record as any).attendanceStatus || 'Chưa điểm danh';
 
               // Check if this is a holiday record (either auto-created or falls on holiday date)
@@ -1216,6 +1224,10 @@ export const AttendanceHistory: React.FC = () => {
                       {status}
                     </span>
                   )}
+                </td>
+                <td className="px-6 py-4">
+                  <div className="font-semibold text-emerald-700">{formatCurrency(recordAmount)} đ</div>
+                  <div className="text-xs text-gray-400">{present} HS × {formatCurrency(tuitionFee)} đ</div>
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex justify-end gap-2">
@@ -1259,7 +1271,7 @@ export const AttendanceHistory: React.FC = () => {
             );
             }) : (
               <tr>
-                <td colSpan={7} className="px-6 py-12 text-center text-gray-400">
+                <td colSpan={8} className="px-6 py-12 text-center text-gray-400">
                   Chưa có dữ liệu điểm danh
                 </td>
               </tr>
@@ -1616,7 +1628,7 @@ export const AttendanceHistory: React.FC = () => {
                     { value: AttendanceStatus.ON_TIME, label: 'Đúng giờ', color: 'green' },
                     { value: AttendanceStatus.LATE, label: 'Đi trễ', color: 'yellow' },
                     { value: AttendanceStatus.ABSENT, label: 'Vắng', color: 'red' },
-                    { value: AttendanceStatus.RESERVED, label: 'Bảo lưu', color: 'orange' },
+                    { value: AttendanceStatus.RESERVED, label: 'Nghỉ có phép', color: 'orange' },
                   ].map(option => (
                     <button
                       key={option.value}

@@ -36,6 +36,7 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   // Transfer class modal state
   const [showTransferModal, setShowTransferModal] = useState(false);
@@ -132,15 +133,26 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
   };
 
 
-  // Remove student from class using admin fix service (cleans up attendance data)
+  // Remove student from class (clear classId / class name / classIds)
   const removeStudentFromClass = async (student: Student) => {
+    if (removingId) return;
     if (!confirm(`Bạn có chắc muốn xóa ${student.fullName} khỏi lớp ${classData.name}?`)) return;
 
+    setRemovingId(student.id);
     try {
-      const classIds = (student.classIds || []).filter((id) => id !== classData.id);
+      // Gộp classId hiện tại vào danh sách rồi loại bỏ lớp này
+      const linkedIds = Array.from(
+        new Set([...(student.classIds || []), ...(student.classId ? [student.classId] : [])])
+      );
+      const classIds = linkedIds.filter((id) => id !== classData.id);
+
+      const matchedById = student.classId === classData.id || linkedIds.includes(classData.id);
+      const matchedByName = Boolean(student.class && student.class === classData.name);
+      const isPrimaryOfThisClass = student.classId === classData.id || matchedByName;
+
       const updates: Partial<Student> = { classIds };
 
-      if (student.classId === classData.id) {
+      if (isPrimaryOfThisClass) {
         if (classIds.length > 0) {
           const otherClass = allClasses.find((c) => c.id === classIds[0]);
           updates.classId = classIds[0];
@@ -149,14 +161,45 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
           updates.classId = '';
           updates.class = '';
         }
+      } else if (matchedByName) {
+        updates.class = '';
+      }
+
+      // Đảm bảo không còn khớp theo tên/id lớp sau khi xóa
+      if (matchedByName && updates.class === undefined) {
+        updates.class = '';
+      }
+      if (matchedById && student.classId === classData.id && updates.classId === undefined) {
+        updates.classId = '';
       }
 
       await StudentService.updateStudent(student.id, updates);
+
+      try {
+        await createEnrollment({
+          studentId: student.id,
+          studentName: student.fullName,
+          classId: '',
+          className: '',
+          sessions: 0,
+          type: 'Xóa khỏi lớp',
+          createdBy: staffData?.name || 'Hệ thống',
+          staff: staffData?.name,
+          createdDate: new Date().toLocaleDateString('vi-VN'),
+          note: `Xóa khỏi lớp ${classData.name} từ Quản lý học viên trong lớp`,
+        });
+      } catch (enrollErr) {
+        console.warn('Enrollment log failed (student still removed):', enrollErr);
+      }
+
       await fetchStudents();
       onUpdate();
+      alert(`Đã xóa ${student.fullName} khỏi lớp ${classData.name}`);
     } catch (err) {
       console.error('Error removing student from class:', err);
       alert(sanitizeFirebaseError(err));
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -332,8 +375,12 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
                         <ArrowRightLeft size={18} />
                       </button>
                       <button
-                        onClick={() => removeStudentFromClass(student)}
-                        className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeStudentFromClass(student);
+                        }}
+                        disabled={removingId === student.id}
+                        className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
                         title="Xóa khỏi lớp"
                       >
                         <UserMinus size={18} />

@@ -3,7 +3,7 @@
  */
 
 import { supabase } from '../config/supabase';
-import { AttendanceRecord, StudentAttendance, AttendanceStatus, StudentStatus } from '../../types';
+import { AttendanceRecord, StudentAttendance, AttendanceStatus, StudentStatus, isExcusedAttendanceStatus, isSessionRevenueAttendanceStatus } from '../../types';
 
 type AttendanceRow = {
   id: string;
@@ -17,6 +17,9 @@ type AttendanceRow = {
   absent: number;
   reserved: number;
   tutored: number;
+  unit_price: number | null;
+  billable_students: number | null;
+  session_amount: number | null;
   status: string;
   holiday_id: string | null;
   holiday_name: string | null;
@@ -80,6 +83,9 @@ const mapAttendanceRow = (row: AttendanceRow): AttendanceRecord => ({
   absent: row.absent,
   reserved: row.reserved,
   tutored: row.tutored,
+  unitPrice: row.unit_price ?? 0,
+  billableStudents: row.billable_students ?? row.present,
+  sessionAmount: row.session_amount ?? 0,
   status: row.status as AttendanceRecord['status'],
   holidayId: row.holiday_id || undefined,
   holidayName: row.holiday_name || undefined,
@@ -112,6 +118,7 @@ const mapStudentAttendanceRow = (row: StudentAttendanceRow): StudentAttendance =
     checkExerciseTags: meta.checkExerciseTags
       ? JSON.stringify(meta.checkExerciseTags)
       : undefined,
+    task: typeof meta.task === 'string' ? meta.task : undefined,
     homeworkCompletion: row.homework_completion ?? undefined,
     testName: row.test_name || undefined,
     score: row.score ?? undefined,
@@ -135,6 +142,9 @@ const attendanceToInsert = (data: Omit<AttendanceRecord, 'id'>) => ({
   absent: data.absent,
   reserved: data.reserved,
   tutored: data.tutored,
+  unit_price: data.unitPrice ?? 0,
+  billable_students: data.billableStudents ?? data.present,
+  session_amount: data.sessionAmount ?? (data.unitPrice ?? 0) * (data.billableStudents ?? data.present),
   status: data.status,
   holiday_id: data.holidayId || null,
   holiday_name: data.holidayName || null,
@@ -190,6 +200,9 @@ const studentToInsert = (
     } catch {
       metadata.checkExerciseTags = student.checkExerciseTags;
     }
+  }
+  if (student.task !== undefined) {
+    metadata.task = student.task.trim();
   }
   if (Object.keys(metadata).length > 0) row.metadata = metadata;
   return row;
@@ -366,6 +379,9 @@ export const updateAttendanceRecord = async (
   if (data.absent !== undefined) payload.absent = data.absent;
   if (data.reserved !== undefined) payload.reserved = data.reserved;
   if (data.tutored !== undefined) payload.tutored = data.tutored;
+  if (data.unitPrice !== undefined) payload.unit_price = data.unitPrice;
+  if (data.billableStudents !== undefined) payload.billable_students = data.billableStudents;
+  if (data.sessionAmount !== undefined) payload.session_amount = data.sessionAmount;
   if (data.status !== undefined) payload.status = data.status;
   if (data.attendanceType !== undefined) payload.attendance_type = data.attendanceType;
   if (data.createdBy !== undefined) payload.created_by = data.createdBy;
@@ -503,6 +519,7 @@ export const saveFullAttendance = async (
     attentionCard?: string;
     lessonExerciseTags?: string;
     checkExerciseTags?: string;
+    task?: string;
     homeworkCompletion?: number;
     testName?: string;
     score?: number;
@@ -520,8 +537,12 @@ export const saveFullAttendance = async (
     (s) => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE
   ).length;
   const absent = markedStudents.filter((s) => s.status === AttendanceStatus.ABSENT).length;
-  const reserved = markedStudents.filter((s) => s.status === AttendanceStatus.RESERVED).length;
+  const reserved = markedStudents.filter((s) => isExcusedAttendanceStatus(s.status)).length;
   const tutored = markedStudents.filter((s) => s.status === AttendanceStatus.TUTORED).length;
+  // Nghỉ có phép / Bảo lưu cũ không tính học phí buổi
+  const billableStudents = markedStudents.filter((s) => isSessionRevenueAttendanceStatus(s.status)).length;
+  const unitPrice = attendanceData.unitPrice ?? 0;
+  const sessionAmount = unitPrice * billableStudents;
 
   const existing = await checkExistingAttendance(attendanceData.classId, attendanceData.date);
   let attendanceId: string;
@@ -533,6 +554,9 @@ export const saveFullAttendance = async (
       absent,
       reserved,
       tutored,
+      billableStudents,
+      sessionAmount,
+      unitPrice,
       status: 'Đã điểm danh',
     });
     attendanceId = existing.id;
@@ -543,6 +567,9 @@ export const saveFullAttendance = async (
       absent,
       reserved,
       tutored,
+      billableStudents,
+      sessionAmount,
+      unitPrice,
       status: 'Đã điểm danh',
     });
   }

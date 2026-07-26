@@ -9,6 +9,7 @@ import { useRooms } from '../src/hooks/useRooms';
 import { useStaff } from '../src/hooks/useStaff';
 import { ClassModel, Student, Holiday, AttendanceRecord } from '../types';
 import { getScheduleTime, getScheduleDays, formatSchedule } from '../src/utils/scheduleUtils';
+import { buildScheduleDetailsFromClass, scheduleDayKeyToNumber } from '../src/utils/classScheduleUtils';
 import { isAssistantRole, isTeacherRole } from '../src/utils/roleUtils';
 import { ModalPortal } from '@/components/modal-portal';
 import { getCenters } from '../src/services/centerService';
@@ -449,16 +450,27 @@ export const Schedule: React.FC = () => {
   };
 
   const getScheduleEntriesForGrid = (cls: ClassModel): ClassModel[] => {
-    if (!cls.scheduleDetails?.length) return [cls];
+    const parsed = buildScheduleDetailsFromClass(cls.schedule, cls.scheduleDetails);
+    if (parsed.days.length === 0) return [cls];
 
-    return cls.scheduleDetails
-      .map((detail) => {
-        const dayNumber = getDayNumberFromDetail(detail.dayOfWeek, detail.dayLabel);
-        if (!dayNumber) return null;
+    return parsed.days
+      .map((day) => {
+        const detail = parsed.detailsByDay[day];
+        const dayNumber = scheduleDayKeyToNumber(day);
+        if (dayNumber < 2 || dayNumber > 8) return null;
 
         const dayName = dayNumberToName[dayNumber] || detail.dayLabel || '';
-        const startTime = detail.startTime || detail.teacherStartTime || detail.assistantStartTime || detail.foreignTeacherStartTime || '';
-        const endTime = detail.endTime || detail.teacherEndTime || detail.assistantEndTime || detail.foreignTeacherEndTime || '';
+        const rawStart = detail.startTime || detail.teacherStartTime || detail.assistantStartTime || detail.foreignTeacherStartTime || '';
+        const rawEnd = detail.endTime || detail.teacherEndTime || detail.assistantEndTime || detail.foreignTeacherEndTime || '';
+        const toMinutes = (time: string) => {
+          const [hour, minute] = time.split(':').map(Number);
+          return (hour || 0) * 60 + (minute || 0);
+        };
+        let startTime = rawStart;
+        let endTime = rawEnd;
+        if (startTime && endTime && toMinutes(endTime) < toMinutes(startTime)) {
+          [startTime, endTime] = [endTime, startTime];
+        }
         const schedule = startTime && endTime ? `${startTime}-${endTime} ${dayName}` : dayName;
 
         return {
@@ -506,7 +518,16 @@ export const Schedule: React.FC = () => {
     return result;
   }, [classes, currentWeekStart]);
 
-  const selectedMonthDate = useMemo(() => new Date(currentWeekStart), [currentWeekStart]);
+  const selectedMonthDate = useMemo(
+    () => new Date(currentWeekStart.getFullYear(), currentWeekStart.getMonth(), 1),
+    [currentWeekStart]
+  );
+
+  const currentWeekEnd = useMemo(() => {
+    const end = new Date(currentWeekStart);
+    end.setDate(end.getDate() + 6);
+    return end;
+  }, [currentWeekStart]);
 
   const getMonthRange = (date: Date) => {
     const start = new Date(date.getFullYear(), date.getMonth(), 1);
@@ -608,11 +629,9 @@ export const Schedule: React.FC = () => {
     return ![
       'inactive',
       'nghi hoc',
-      'tam dung',
+      'da nghi',
       'bao luu',
       'reserved',
-      'trial',
-      'hoc thu',
       'ended',
       'ket thuc',
       'da ket thuc',
@@ -621,8 +640,6 @@ export const Schedule: React.FC = () => {
 
   const getClassStudentCount = (cls: ClassModel) => {
     const studentIds = (cls as ClassModel & { studentIds?: string[] }).studentIds || [];
-    if (studentIds.length > 0) return studentIds.length;
-
     const matchedStudents = allStudents.filter(student => {
       const inClass =
         student.classId === cls.id ||
@@ -632,7 +649,17 @@ export const Schedule: React.FC = () => {
       if (!inClass) return false;
       return isRevenueStudentStatus(student.status);
     });
-    return matchedStudents.length || cls.activeStudents || cls.studentsCount || 0;
+
+    if (matchedStudents.length > 0) return matchedStudents.length;
+    if (studentIds.length > 0) return studentIds.length;
+
+    const classWithCounts = cls as ClassModel & { currentStudents?: number };
+    return (
+      Number(classWithCounts.activeStudents) ||
+      Number(classWithCounts.studentsCount) ||
+      Number(classWithCounts.currentStudents) ||
+      0
+    );
   };
 
   const getClassRevenueEstimate = (cls: ClassModel, sessionCount = 1) => {
@@ -640,6 +667,7 @@ export const Schedule: React.FC = () => {
     const studentCount = getClassStudentCount(cls);
     const tuitionFee = parseMoneyValue(cls.tuitionFee);
     const totalSessions = getEffectiveTotalSessions(cls);
+    // Tổng tiền tháng = Học phí × số học sinh × số buổi trong tháng
     const pricePerSession = tuitionFee;
 
     return {
@@ -648,148 +676,186 @@ export const Schedule: React.FC = () => {
       tuitionFee,
       totalSessions,
       pricePerSession,
-      revenuePerSession: canEstimateRevenue ? pricePerSession * studentCount : 0,
-      estimatedRevenue: canEstimateRevenue ? pricePerSession * studentCount * sessionCount : 0,
+      revenuePerSession: canEstimateRevenue ? tuitionFee * studentCount : 0,
+      estimatedRevenue: canEstimateRevenue ? tuitionFee * studentCount * sessionCount : 0,
       hasTuitionData: tuitionFee > 0,
     };
   };
 
-  const parseClassCreatedDate = (cls: ClassModel) => {
-    const classWithDates = cls as ClassModel & { createdAt?: string; createdDate?: string };
-    const rawDate = classWithDates.createdDate || classWithDates.createdAt;
-    if (!rawDate) return null;
+  const getClassMonthlySessionCount = (cls: ClassModel, monthDate: Date) => {
+    if (!isStudyingClass(cls)) return 0;
 
-    const dateOnly = rawDate.includes('T') ? rawDate.split('T')[0] : rawDate;
-    const normalizedDate = dateOnly.includes('/')
-      ? dateOnly.split('/').reverse().join('-')
-      : dateOnly;
-    const parsedDate = new Date(`${normalizedDate}T00:00:00`);
-
-    return Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+    const { start, end } = getMonthRange(monthDate);
+    return collectTimetableSessions(classes, start, end)
+      .filter((session) => session.classId === cls.id).length;
   };
 
-  const isSameMonth = (firstDate: Date, secondDate: Date) =>
-    firstDate.getFullYear() === secondDate.getFullYear() && firstDate.getMonth() === secondDate.getMonth();
-
-  const isClassCreatedByMonth = (cls: ClassModel, monthDate: Date) => {
-    const createdDate = parseClassCreatedDate(cls);
-    if (!createdDate) return true;
-
-    const classCreatedMonth = new Date(createdDate.getFullYear(), createdDate.getMonth(), 1);
-    const estimateMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
-    return estimateMonth >= classCreatedMonth;
+  type TimetableSessionSlot = {
+    classId: string;
+    className: string;
+    date: string;
+    cls: ClassModel;
+    teacherHours: number;
+    assistantHours: number;
+    foreignTeacherHours: number;
   };
 
-  const getClassDayEntries = (cls: ClassModel) => {
-    const parseDayNumber = (dayOfWeek?: string, dayLabel?: string) => {
-      const raw = `${dayOfWeek || ''} ${dayLabel || ''}`;
-      const normalizedRaw = raw
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase()
-        .trim();
-      if (/(^|[^a-z])cn([^a-z]|$)|chu\s*nhat|sunday/.test(normalizedRaw)) return 8;
-      if (/^0$|^8$/.test(normalizedRaw)) return 8;
-      const match = raw.match(/\d/);
-      return match ? parseInt(match[0], 10) : NaN;
-    };
-
-    if (cls.scheduleDetails?.length) {
-      return cls.scheduleDetails.map(detail => ({
-        dayNumber: parseDayNumber(detail.dayOfWeek, detail.dayLabel),
-        teacherHours: getDurationHours(detail.teacherStartTime || detail.startTime, detail.teacherEndTime || detail.endTime, detail.teacherDuration),
-        assistantHours: getDurationHours(detail.assistantStartTime || detail.startTime, detail.assistantEndTime || detail.endTime, detail.assistantDuration),
-        foreignTeacherHours: getDurationHours(detail.foreignTeacherStartTime || detail.startTime, detail.foreignTeacherEndTime || detail.endTime, detail.foreignTeacherDuration),
-      })).filter(entry => entry.dayNumber >= 2 && entry.dayNumber <= 8);
-    }
-
+  const getSessionRoleHours = (cls: ClassModel) => {
     const range = getScheduleTimeRange(cls.schedule);
     const defaultHours = getDurationHours(range.start, range.end) || 1.5;
-    return parseDaysFromSchedule(cls.schedule || '').map(dayNumber => ({
-      dayNumber,
+    return {
       teacherHours: cls.teacherDuration ? cls.teacherDuration / 60 : defaultHours,
       assistantHours: cls.assistant ? (cls.assistantDuration ? cls.assistantDuration / 60 : defaultHours) : 0,
       foreignTeacherHours: cls.foreignTeacher ? (cls.foreignTeacherDuration ? cls.foreignTeacherDuration / 60 : defaultHours) : 0,
-    }));
+    };
   };
 
-  const getClassMonthlySessionCount = (cls: ClassModel, monthDate: Date) => {
-    if (!shouldCountClassInEstimates(cls) || !isClassCreatedByMonth(cls, monthDate)) return 0;
-
-    const entries = getClassDayEntries(cls);
-    if (!entries.length) return 0;
-
-    const { start, end } = getMonthRange(monthDate);
-    let sessionCount = 0;
+  /** Đếm buổi và doanh thu đúng như các ô hiển thị trên lưới TKB */
+  const collectTimetableSessions = (
+    classList: ClassModel[],
+    rangeStart: Date,
+    rangeEnd: Date,
+  ): TimetableSessionSlot[] => {
+    const sessions: TimetableSessionSlot[] = [];
+    const start = new Date(rangeStart);
+    const end = new Date(rangeEnd);
 
     for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
-      if (!isClassScheduledInMonthlyEstimate(cls, date)) continue;
       const dayNumber = date.getDay() === 0 ? 8 : date.getDay() + 1;
-      sessionCount += entries.filter(entry => entry.dayNumber === dayNumber).length;
+
+      classList.forEach((cls) => {
+        if (!isStudyingClass(cls)) return;
+        if (!isClassScheduledInMonthlyEstimate(cls, date)) return;
+
+        const revenueEstimate = getClassRevenueEstimate(cls);
+        if (!revenueEstimate.hasTuitionData || revenueEstimate.studentCount <= 0) {
+          return;
+        }
+
+        getScheduleEntriesForGrid(cls).forEach((scheduleEntry) => {
+          const scheduleDays = parseDaysFromSchedule(scheduleEntry.schedule || '');
+          if (!scheduleDays.includes(dayNumber)) return;
+
+          const roleHours = getSessionRoleHours(scheduleEntry);
+          sessions.push({
+            classId: cls.id,
+            className: cls.name,
+            date: formatDateLocal(date),
+            cls: scheduleEntry,
+            ...roleHours,
+          });
+        });
+      });
     }
 
-    return sessionCount;
+    return sessions;
   };
 
-  const getMonthlyEstimate = (monthDate: Date) => {
-    const { start, end } = getMonthRange(monthDate);
+  const getRangeEstimate = (
+    classList: ClassModel[],
+    rangeStart: Date,
+    rangeEnd: Date,
+  ) => {
+    const sessions = collectTimetableSessions(classList, rangeStart, rangeEnd);
     const teacherMap = new Map<string, { name: string; hours: number; sessions: number; classes: Set<string>; dates: Set<string> }>();
     const classRevenueMap = new Map<string, { id: string; name: string; studentCount: number; sessionCount: number; revenue: number; pricePerSession: number; tuitionFee: number; totalSessions: number; actualSessions: number; actualStudentCount: number; absentCount: number; actualRevenue: number }>();
     let totalSessions = 0;
     let totalRevenue = 0;
+
+    sessions.forEach((session) => {
+      const classRef = classList.find((c) => c.id === session.classId) || session.cls;
+      const revenueEstimate = getClassRevenueEstimate(classRef);
+      totalSessions += 1;
+      totalRevenue += revenueEstimate.revenuePerSession;
+
+      const currentRevenue = classRevenueMap.get(session.classId) || {
+        id: session.classId,
+        name: session.className,
+        studentCount: revenueEstimate.studentCount,
+        sessionCount: 0,
+        revenue: 0,
+        pricePerSession: revenueEstimate.pricePerSession,
+        tuitionFee: revenueEstimate.tuitionFee,
+        totalSessions: revenueEstimate.totalSessions,
+        actualSessions: 0,
+        actualStudentCount: 0,
+        absentCount: 0,
+        actualRevenue: 0,
+      };
+      currentRevenue.sessionCount += 1;
+      currentRevenue.revenue += revenueEstimate.revenuePerSession;
+      classRevenueMap.set(session.classId, currentRevenue);
+
+      const addTeacher = (name: string | undefined, hours: number) => {
+        if (!name || hours <= 0) return;
+        const current = teacherMap.get(name) || { name, hours: 0, sessions: 0, classes: new Set<string>(), dates: new Set<string>() };
+        current.hours += hours;
+        current.sessions += 1;
+        current.classes.add(session.className);
+        current.dates.add(session.date);
+        teacherMap.set(name, current);
+      };
+
+      addTeacher(session.cls.teacher, session.teacherHours);
+      addTeacher(session.cls.assistant, session.assistantHours);
+      addTeacher(session.cls.foreignTeacher, session.foreignTeacherHours);
+    });
+
+    const revenueFromClasses = Array.from(classRevenueMap.values()).reduce(
+      (sum, item) => sum + item.revenue,
+      0
+    );
+
+    return {
+      totalSessions,
+      totalRevenue: revenueFromClasses,
+      teacherMap,
+      classRevenueMap,
+    };
+  };
+
+  const getMonthlyEstimate = (monthDate: Date) => {
+    const { start, end } = getMonthRange(monthDate);
+    const monthlySessions = collectTimetableSessions(classes, start, end);
+    const sessionsByClass = new Map<string, number>();
+    monthlySessions.forEach((session) => {
+      sessionsByClass.set(session.classId, (sessionsByClass.get(session.classId) || 0) + 1);
+    });
+
+    const { totalSessions, teacherMap, classRevenueMap } = getRangeEstimate(classes, start, end);
     let totalActualRevenue = 0;
 
-    classes.forEach(cls => {
-      if (!isClassCreatedByMonth(cls, monthDate)) return;
+    // Tổng tháng = Σ (học phí × sĩ số × số buổi TKB) theo từng lớp — khớp popup trên lưới
+    const totalRevenue = classes.reduce((sum, cls) => {
+      const sessionCount = sessionsByClass.get(cls.id) || 0;
+      if (sessionCount <= 0) return sum;
+      return sum + getClassRevenueEstimate(cls, sessionCount).estimatedRevenue;
+    }, 0);
 
-      const entries = getClassDayEntries(cls);
-      if (!entries.length) return;
-      const revenueEstimate = getClassRevenueEstimate(cls);
-
-      for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
-        if (!isClassScheduledInMonthlyEstimate(cls, date)) continue;
-        const dayNumber = date.getDay() === 0 ? 8 : date.getDay() + 1;
-        const matchedEntries = entries.filter(entry => entry.dayNumber === dayNumber);
-        if (!matchedEntries.length) continue;
-
-        matchedEntries.forEach(entry => {
-          totalSessions += 1;
-          const expectedRevenue = revenueEstimate.revenuePerSession;
-
-          if (revenueEstimate.canEstimateRevenue && revenueEstimate.hasTuitionData && revenueEstimate.studentCount > 0) {
-            const currentRevenue = classRevenueMap.get(cls.id) || {
-              id: cls.id,
-              name: cls.name,
-              studentCount: revenueEstimate.studentCount,
-              sessionCount: 0,
-              revenue: 0,
-              pricePerSession: revenueEstimate.pricePerSession,
-              tuitionFee: revenueEstimate.tuitionFee,
-              totalSessions: revenueEstimate.totalSessions,
-              actualSessions: 0,
-              actualStudentCount: 0,
-              absentCount: 0,
-              actualRevenue: 0,
-            };
-            currentRevenue.sessionCount += 1;
-            currentRevenue.revenue += expectedRevenue;
-            classRevenueMap.set(cls.id, currentRevenue);
-            totalRevenue += expectedRevenue;
-          }
-
-          const addTeacher = (name: string | undefined, hours: number) => {
-            if (!name || hours <= 0) return;
-            const current = teacherMap.get(name) || { name, hours: 0, sessions: 0, classes: new Set<string>(), dates: new Set<string>() };
-            current.hours += hours;
-            current.sessions += 1;
-            current.classes.add(cls.name);
-            current.dates.add(formatDateLocal(date));
-            teacherMap.set(name, current);
-          };
-
-          addTeacher(cls.teacher, entry.teacherHours);
-          addTeacher(cls.assistant, entry.assistantHours);
-          addTeacher(cls.foreignTeacher, entry.foreignTeacherHours);
+    // Đồng bộ doanh thu dự kiến từng lớp với công thức trên
+    sessionsByClass.forEach((sessionCount, classId) => {
+      const cls = classes.find((c) => c.id === classId);
+      if (!cls) return;
+      const estimated = getClassRevenueEstimate(cls, sessionCount).estimatedRevenue;
+      const current = classRevenueMap.get(classId);
+      if (current) {
+        current.revenue = estimated;
+        current.sessionCount = sessionCount;
+      } else {
+        const est = getClassRevenueEstimate(cls, sessionCount);
+        classRevenueMap.set(classId, {
+          id: classId,
+          name: cls.name,
+          studentCount: est.studentCount,
+          sessionCount,
+          revenue: estimated,
+          pricePerSession: est.pricePerSession,
+          tuitionFee: est.tuitionFee,
+          totalSessions: est.totalSessions,
+          actualSessions: 0,
+          actualStudentCount: 0,
+          absentCount: 0,
+          actualRevenue: 0,
         });
       }
     });
@@ -829,13 +895,14 @@ export const Schedule: React.FC = () => {
       current.actualRevenue += actualRevenue;
       classRevenueMap.set(matchedClass.id, current);
       totalActualRevenue += actualRevenue;
-      });
+    });
 
     return {
       monthLabel: getMonthLabel(monthDate),
       totalSessions,
       totalRevenue,
       totalActualRevenue,
+      totalClasses: classRevenueMap.size,
       teacherStats: Array.from(teacherMap.values())
         .map(item => ({
           ...item,
@@ -851,6 +918,44 @@ export const Schedule: React.FC = () => {
   };
 
   const monthlyStats = useMemo(() => getMonthlyEstimate(selectedMonthDate), [classes, allStudents, monthlyAttendanceRecords, selectedMonthDate, activeHolidays]);
+
+  const weeklyStats = useMemo(() => {
+    let totalSessions = 0;
+    let totalRevenue = 0;
+
+    days.forEach((day, dayIdx) => {
+      const cellDate = new Date(currentWeekStart);
+      cellDate.setDate(cellDate.getDate() + dayIdx);
+
+      timePeriods.forEach((period) => {
+        const dayClasses = scheduleByDayAndPeriod[period.id]?.[day] || [];
+        dayClasses.forEach((cls) => {
+          if (getHolidayForDate(cellDate, cls.id, cls.branch)) return;
+          const est = getClassRevenueEstimate(cls, 1);
+          if (est.revenuePerSession <= 0) return;
+          totalSessions += 1;
+          totalRevenue += est.revenuePerSession;
+        });
+      });
+    });
+
+    const classIds = new Set<string>();
+    days.forEach((day, dayIdx) => {
+      const cellDate = new Date(currentWeekStart);
+      cellDate.setDate(cellDate.getDate() + dayIdx);
+      timePeriods.forEach((period) => {
+        (scheduleByDayAndPeriod[period.id]?.[day] || []).forEach((cls) => {
+          if (!getHolidayForDate(cellDate, cls.id, cls.branch)) classIds.add(cls.id);
+        });
+      });
+    });
+
+    return {
+      totalSessions,
+      totalRevenue,
+      totalClasses: classIds.size,
+    };
+  }, [classes, allStudents, currentWeekStart, scheduleByDayAndPeriod, activeHolidays]);
 
   const revenueGrowthData = useMemo(() => {
     return Array.from({ length: 6 }, (_, index) => {
@@ -1097,7 +1202,8 @@ export const Schedule: React.FC = () => {
                             // Get consistent color for this class (uses saved color or fallback to hash)
                             const classColor = getClassColor(cls);
                             const monthlySessionCount = getClassMonthlySessionCount(cls, selectedMonthDate);
-                            const revenueEstimate = getClassRevenueEstimate(cls, monthlySessionCount);
+                            const monthlyRevenueEstimate = getClassRevenueEstimate(cls, monthlySessionCount);
+                            const sessionRevenueEstimate = getClassRevenueEstimate(cls, 1);
                             
                             return (
                               <div 
@@ -1145,10 +1251,15 @@ export const Schedule: React.FC = () => {
                                           </>
                                         )}
                                       </p>
-                                      {revenueEstimate.hasTuitionData && revenueEstimate.canEstimateRevenue && (
+                                      {!isOnHoliday && sessionRevenueEstimate.revenuePerSession > 0 && (
                                         <p className="text-emerald-700 text-[10px] print:hidden mt-1 flex items-center gap-1.5 font-semibold">
                                           <DollarSign size={9} className="opacity-70" />
-                                          <span>{formatCurrency(revenueEstimate.estimatedRevenue)}</span>
+                                          <span>{formatCurrency(sessionRevenueEstimate.revenuePerSession)}</span>
+                                        </p>
+                                      )}
+                                      {!isOnHoliday && sessionRevenueEstimate.hasTuitionData && sessionRevenueEstimate.canEstimateRevenue && sessionRevenueEstimate.revenuePerSession <= 0 && (
+                                        <p className="text-amber-700 text-[10px] print:hidden mt-1">
+                                          Chưa có sĩ số
                                         </p>
                                       )}
                                     </div>
@@ -1234,15 +1345,22 @@ export const Schedule: React.FC = () => {
                                         <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">Ước doanh thu</span>
                                         <DollarSign size={12} className="text-emerald-600" />
                                       </div>
-                                      {!revenueEstimate.canEstimateRevenue ? (
+                                      {!monthlyRevenueEstimate.canEstimateRevenue ? (
                                         <p className="text-[10px] text-emerald-700/70">
                                           Lớp tạm dừng không tính tiền dự trù.
                                         </p>
-                                      ) : revenueEstimate.hasTuitionData ? (
+                                      ) : monthlyRevenueEstimate.hasTuitionData ? (
                                         <div className="space-y-1 text-[10px] text-emerald-800">
                                           <div className="flex items-center justify-between gap-2">
-                                            <span>Tổng tháng</span>
-                                            <span className="font-bold">{formatCurrency(revenueEstimate.estimatedRevenue)}</span>
+                                            <span>Mỗi buổi</span>
+                                            <span className="font-bold">{formatCurrency(sessionRevenueEstimate.revenuePerSession)}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between gap-2 text-emerald-700/80">
+                                            <span>{monthlyRevenueEstimate.studentCount} HS × {formatCurrency(monthlyRevenueEstimate.tuitionFee)}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span>Tổng tháng ({monthlySessionCount} buổi)</span>
+                                            <span className="font-bold">{formatCurrency(monthlyRevenueEstimate.estimatedRevenue)}</span>
                                           </div>
                                         </div>
                                       ) : (
@@ -1343,8 +1461,8 @@ export const Schedule: React.FC = () => {
       </div>
 
       {/* Monthly Teaching and Revenue Stats */}
-      <div className="mt-4 grid grid-cols-1 xl:grid-cols-3 gap-4 print:hidden">
-        <div className="xl:col-span-2 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+      <div className="mt-4 grid grid-cols-1 xl:grid-cols-10 gap-4 print:hidden">
+        <div className="xl:col-span-3 bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100 bg-slate-50 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Clock size={18} className="text-indigo-600" />
@@ -1354,7 +1472,7 @@ export const Schedule: React.FC = () => {
               {monthlyStats.monthLabel}
             </span>
           </div>
-          <div className="overflow-x-auto">
+          <div className="max-h-72 overflow-auto">
             <table className="w-full text-sm">
               <thead className="bg-white text-xs uppercase text-slate-500">
                 <tr>
@@ -1395,23 +1513,41 @@ export const Schedule: React.FC = () => {
           </div>
         </div>
 
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="xl:col-span-7 space-y-4 min-w-0">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar size={18} className="text-indigo-600" />
+                <span className="text-xs font-semibold uppercase text-slate-500">Tuần trên TKB</span>
+              </div>
+              <p className="text-2xl font-bold text-slate-900">{weeklyStats.totalSessions} buổi</p>
+              <p className="text-xl font-bold text-indigo-700 break-words mt-1">{formatCurrency(weeklyStats.totalRevenue)}</p>
+              <p className="text-xs text-slate-400 mt-1">Tổng tiền các ô đang hiển thị</p>
+            </div>
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <GraduationCap size={18} className="text-violet-600" />
+                <span className="text-xs font-semibold uppercase text-slate-500">Số lớp</span>
+              </div>
+              <p className="text-2xl font-bold text-slate-900">{monthlyStats.totalClasses}</p>
+              <p className="text-sm font-semibold text-violet-700 mt-1">Tuần: {weeklyStats.totalClasses} lớp</p>
+              <p className="text-xs text-slate-400 mt-1">{monthlyStats.monthLabel}</p>
+            </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <Calendar size={18} className="text-blue-600" />
-                <span className="text-xs font-semibold uppercase text-slate-500">Tổng buổi</span>
+                <span className="text-xs font-semibold uppercase text-slate-500">Tổng buổi tháng</span>
               </div>
               <p className="text-2xl font-bold text-slate-900">{monthlyStats.totalSessions}</p>
-              <p className="text-xs text-slate-400 mt-1">Tạm tính theo lịch tháng</p>
+              <p className="text-xs text-slate-400 mt-1">{monthlyStats.monthLabel}</p>
             </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center gap-2 mb-2">
                 <DollarSign size={18} className="text-emerald-600" />
-                <span className="text-xs font-semibold uppercase text-slate-500">Tổng tiền</span>
+                <span className="text-xs font-semibold uppercase text-slate-500">Tổng tiền tháng</span>
               </div>
               <p className="text-xl font-bold text-emerald-700 break-words">{formatCurrency(monthlyStats.totalRevenue)}</p>
-              <p className="text-xs text-slate-400 mt-1">Theo thời khóa biểu tháng</p>
+              <p className="text-xs text-slate-400 mt-1">Sĩ số × học phí × buổi TKB</p>
             </div>
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
               <div className="flex items-center gap-2 mb-2">
@@ -1419,7 +1555,7 @@ export const Schedule: React.FC = () => {
                 <span className="text-xs font-semibold uppercase text-slate-500">Thực thu</span>
               </div>
               <p className="text-xl font-bold text-teal-700 break-words">{formatCurrency(monthlyStats.totalActualRevenue)}</p>
-              <p className="text-xs text-slate-400 mt-1">Theo điểm danh đã lưu</p>
+              <p className="text-xs text-slate-400 mt-1">Theo điểm danh đã lưu · {monthlyStats.monthLabel}</p>
             </div>
           </div>
 
@@ -1437,7 +1573,7 @@ export const Schedule: React.FC = () => {
                   <tr>
                     <th className="px-3 py-2.5 text-left">Lớp</th>
                     <th className="px-3 py-2.5 text-right">Buổi TKB</th>
-                    <th className="px-3 py-2.5 text-right">Học phí/buổi</th>
+                    <th className="px-3 py-2.5 text-right">Học phí</th>
                     <th className="px-3 py-2.5 text-right">Học viên</th>
                     <th className="px-3 py-2.5 text-right">Doanh thu dự kiến</th>
                     <th className="px-3 py-2.5 text-right">Buổi đã điểm danh</th>
@@ -1467,6 +1603,37 @@ export const Schedule: React.FC = () => {
                     </tr>
                   ))}
                 </tbody>
+                {monthlyStats.classRevenueStats.length > 0 && (
+                  <tfoot className="sticky bottom-0 z-10 bg-slate-100 border-t-2 border-slate-300">
+                    <tr>
+                      <td className="px-3 py-3 font-bold text-slate-800">
+                        Tổng ({monthlyStats.totalClasses} lớp)
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-slate-800">
+                        {monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.sessionCount, 0)}
+                      </td>
+                      <td className="px-3 py-3 text-right text-slate-400">—</td>
+                      <td className="px-3 py-3 text-right font-bold text-slate-800">
+                        {monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.studentCount, 0)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-emerald-700">
+                        {formatCurrency(monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.revenue, 0))}
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-teal-700">
+                        {monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.actualSessions, 0)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-teal-700">
+                        {monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.actualStudentCount, 0)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-teal-700">
+                        {formatCurrency(monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.actualRevenue, 0))}
+                      </td>
+                      <td className="px-3 py-3 text-right font-bold text-rose-600">
+                        {monthlyStats.classRevenueStats.reduce((sum, item) => sum + item.absentCount, 0)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </div>

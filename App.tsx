@@ -14,6 +14,7 @@ const StudentManager = lazy(() => import('./pages/StudentManager').then(m => ({ 
 const TrialStudents = lazy(() => import('./pages/TrialStudents').then(m => ({ default: m.TrialStudents })));
 const Schedule = lazy(() => import('./pages/Schedule').then(m => ({ default: m.Schedule })));
 const TutoringManager = lazy(() => import('./pages/TutoringManager').then(m => ({ default: m.TutoringManager })));
+const TuitionExport = lazy(() => import('./pages/TuitionExport').then(m => ({ default: m.TuitionExport })));
 const AttendanceHistory = lazy(() => import('./pages/AttendanceHistory').then(m => ({ default: m.AttendanceHistory })));
 const Attendance = lazy(() => import('./pages/Attendance').then(m => ({ default: m.Attendance })));
 const TodayAttendance = lazy(() => import('./pages/TodayAttendance').then(m => ({ default: m.TodayAttendance })));
@@ -127,6 +128,7 @@ const App: React.FC = () => {
                 <Route path="/training/attendance" element={<Attendance />} />
                 <Route path="/training/attendance-today" element={<TodayAttendance />} />
                 <Route path="/training/tutoring" element={<TutoringManager />} />
+                <Route path="/training/tuition-export" element={<TuitionExport />} />
                 <Route path="/training/homework" element={<HomeworkManager />} />
                 <Route path="/training/attendance-history" element={<AttendanceHistory />} />
 

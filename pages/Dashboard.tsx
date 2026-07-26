@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, query, where, orderBy, limit, onSnapshot, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
+import { collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, query, where, orderBy, limit, writeBatch, runTransaction, arrayUnion, Timestamp, db } from '@/src/utils/legacyFirestoreStub';
 /**
  * Dashboard Page
  * Warm Education Design - Teal & Coral Theme
@@ -12,8 +12,6 @@ import {
   Users,
   BookOpen,
   TrendingUp,
-  Gift,
-  Package,
   DollarSign,
   AlertCircle,
   X,
@@ -25,10 +23,7 @@ import {
   Wallet,
   PieChart as PieChartIcon,
   BarChart3,
-  Heart,
   Cake,
-  Box,
-  ChevronRight,
   Activity,
   CalendarCheck,
   AlertTriangle,
@@ -55,10 +50,10 @@ import {
 } from 'recharts';
 import { formatCurrency } from '../src/utils/currencyUtils';
 import { getRevenueSummary, type RevenueGrowthPoint } from '../src/services/revenueService';
+import { calculateMonthlyScheduleRevenue, calculateScheduleRevenueGrowth } from '../src/services/scheduleRevenueService';
 import { StudentService } from '../src/services/studentService';
 import { ClassService } from '../src/services/classService';
 import { useSalaryReport } from '../src/hooks/useSalaryReport';
-import { useProducts } from '../src/hooks/useProducts';
 import { usePermissions } from '../src/hooks/usePermissions';
 import { useAuth } from '../src/hooks/useAuth';
 import { ModalPortal } from '@/components/modal-portal';
@@ -128,6 +123,9 @@ interface DashboardStats {
   revenueData: { month: string; expected: number; actual: number }[];
   debtStats: { noPhi: number; noHocPhi: number };
   totalRevenue: number;
+  expectedScheduleRevenue: number;
+  scheduleSessionCount: number;
+  totalContractRevenue: number;
   totalDebt: number;
   totalBadDebt: number; // Nợ xấu (học sinh nghỉ học còn nợ)
   badDebtStudents: number; // Số học sinh nợ xấu
@@ -264,6 +262,9 @@ export const Dashboard: React.FC = () => {
     revenueData: [],
     debtStats: { noPhi: 0, noHocPhi: 0 },
     totalRevenue: 0,
+    expectedScheduleRevenue: 0,
+    scheduleSessionCount: 0,
+    totalContractRevenue: 0,
     totalDebt: 0,
     totalBadDebt: 0,
     badDebtStudents: 0,
@@ -326,18 +327,6 @@ export const Dashboard: React.FC = () => {
   // Fetch salary report data
   const { summaries: salaryReportData } = useSalaryReport(statsMonth, statsYear);
   
-  // Fetch products data (realtime)
-  const { products: allProducts } = useProducts();
-  
-  // State cho bảng sinh nhật
-  const [birthdayFilter, setBirthdayFilter] = useState<'month' | 'week' | 'today'>('month');
-  const [birthdayType, setBirthdayType] = useState<'staff' | 'student'>('staff');
-  const [birthdayGifts, setBirthdayGifts] = useState<Record<string, { giftPrepared: boolean; giftGiven: boolean }>>({});
-  const [birthdayBranch, setBirthdayBranch] = useState<string>('all');
-  
-  // State cho bảng vật phẩm kho
-  const [stockFilter, setStockFilter] = useState<'low' | 'all'>('low');
-  
   // State cho bộ lọc cơ sở (branch filter)
   const [selectedBranch, setSelectedBranch] = useState('all');
   const [centerList, setCenterList] = useState<{ id: string; name: string }[]>([]);
@@ -390,48 +379,6 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     fetchDashboardData();
   }, [selectedBranch]); // Re-fetch when branch filter changes
-
-  // Load birthday gifts for current month/year
-  useEffect(() => {
-    const thisYear = new Date().getFullYear();
-    const thisMonth = new Date().getMonth() + 1;
-    
-    const unsubscribe = onSnapshot(
-      query(collection(null as any /* firebase removed */, 'birthdayGifts'), where('year', '==', thisYear), where('month', '==', thisMonth)),
-      (snapshot) => {
-        const gifts: Record<string, { giftPrepared: boolean; giftGiven: boolean }> = {};
-        snapshot.docs.forEach(doc => {
-          const data = doc.data();
-          gifts[data.studentId] = {
-            giftPrepared: data.giftPrepared || false,
-            giftGiven: data.giftGiven || false,
-          };
-        });
-        setBirthdayGifts(gifts);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // Toggle gift status
-  const toggleGiftStatus = async (studentId: string, studentName: string, field: 'giftPrepared' | 'giftGiven') => {
-    const thisYear = new Date().getFullYear();
-    const thisMonth = new Date().getMonth() + 1;
-    const docId = `${studentId}_${thisYear}_${thisMonth}`;
-    const docRef = doc(null as any /* firebase removed */, 'birthdayGifts', docId);
-    
-    const currentStatus = birthdayGifts[studentId]?.[field] || false;
-    const newStatus = !currentStatus;
-    
-    await setDoc(docRef, {
-      studentId,
-      studentName,
-      year: thisYear,
-      month: thisMonth,
-      [field]: newStatus,
-      [`${field === 'giftPrepared' ? 'preparedAt' : 'givenAt'}`]: newStatus ? new Date().toISOString() : null,
-    }, { merge: true });
-  };
 
   const fetchDashboardData = async () => {
     try {
@@ -517,9 +464,13 @@ export const Dashboard: React.FC = () => {
       const paidContracts = contracts.filter(c => c.status === 'Paid' || c.status === 'Đã thanh toán');
       const debtContracts = contracts.filter(c => c.status === 'Debt' || c.status === 'Nợ phí');
       
-      let totalRevenue = paidContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
+      let totalRevenue = 0;
+      let totalContractRevenue = paidContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
       let totalDebt = debtContracts.reduce((sum, c) => sum + (c.finalTotal || c.totalAmount || 0), 0);
       let revenueData: { month: string; expected: number; actual: number }[] = [];
+      let revenueByClass: { name: string; value: number }[] = [];
+      let expectedScheduleRevenue = 0;
+      let scheduleSessionCount = 0;
       
       // Calculate bad debt from students who dropped out with debt
       const badDebtStudentsList = students.filter((s: any) => s.badDebt === true);
@@ -528,17 +479,24 @@ export const Dashboard: React.FC = () => {
       
       // Fetch financial report data for pie chart
       try {
-        const financialSummary = await getRevenueSummary(new Date().getFullYear(), selectedBranch);
-        const currentMonthLabel = `T${new Date().getMonth() + 1}`;
-        const currentMonthRevenue = financialSummary.byMonth.find((item) => item.month === currentMonthLabel);
+        const financialSummary = await getRevenueSummary(
+          new Date().getFullYear(),
+          selectedBranch,
+          new Date().getMonth() + 1
+        );
 
-        totalRevenue = financialSummary.totalRevenue;
+        totalContractRevenue = financialSummary.paidRevenue;
+        totalRevenue = financialSummary.totalAttendanceRevenue;
         totalDebt = financialSummary.debtAmount;
-        revenueData = currentMonthRevenue ? [
-          { month: 'Kỳ vọng', expected: currentMonthRevenue.expectedRevenue, actual: 0 },
-          { month: 'Thực tế', expected: 0, actual: currentMonthRevenue.totalRevenue },
-          { month: 'Chênh lệch', expected: 0, actual: Math.max(currentMonthRevenue.expectedRevenue - currentMonthRevenue.totalRevenue, 0) },
-        ] : [];
+        revenueData = financialSummary.byCategory.map((item) => ({
+          month: item.category,
+          expected: 0,
+          actual: item.amount,
+        }));
+        revenueByClass = financialSummary.byCategory.map((item) => ({
+          name: item.category,
+          value: item.amount,
+        }));
 
         if (financialSummary.byCategory.length > 0) {
           setRevenuePieData(financialSummary.byCategory.map((item: any) => ({
@@ -550,20 +508,11 @@ export const Dashboard: React.FC = () => {
           // No data - show empty
           setRevenuePieData([]);
         }
-        setRevenueGrowthSeries(financialSummary.growth);
+        setRevenueGrowthSeries({ daily: [], monthly: [], yearly: [] });
       } catch (err) {
         console.error('Error fetching financial data:', err);
         setRevenuePieData([]);
         setRevenueGrowthSeries({ daily: [], monthly: [], yearly: [] });
-      }
-      
-      // Revenue comparison data from contracts
-      if (revenueData.length === 0 && totalRevenue > 0) {
-        revenueData = [
-          { month: 'Kỳ vọng', expected: totalRevenue * 1.2, actual: 0 },
-          { month: 'Thực tế', expected: 0, actual: totalRevenue },
-          { month: 'Chênh lệch', expected: 0, actual: totalRevenue * 0.2 },
-        ];
       }
       
       // Products are now loaded via useProducts() hook with realtime updates
@@ -667,22 +616,21 @@ export const Dashboard: React.FC = () => {
         };
       }).filter(c => c.count > 0); // Only show classes with students
 
-      // Revenue by class - aggregate contract amounts per class
-      const revenueByClass: { name: string; value: number }[] = [];
-      const classRevenueMap = new Map<string, number>();
-
-      contracts.forEach((c: any) => {
-        if (c.status === 'Paid' || c.status === 'Đã thanh toán') {
-          const className = c.className || c.courseName || 'Khác';
-          const amount = c.finalTotal || c.totalAmount || 0;
-          classRevenueMap.set(className, (classRevenueMap.get(className) || 0) + amount);
-        }
+      const scheduleEstimate = calculateMonthlyScheduleRevenue({
+        classes,
+        students,
+        monthDate: now,
       });
+      expectedScheduleRevenue = scheduleEstimate.totalEstimatedRevenue;
+      scheduleSessionCount = scheduleEstimate.totalSessions;
+      setRevenueGrowthSeries(
+        calculateScheduleRevenueGrowth({
+          classes,
+          students,
+          monthDate: now,
+        })
+      );
 
-      classRevenueMap.forEach((value, name) => {
-        revenueByClass.push({ name, value });
-      });
-      
       // Fetch work sessions for real salary calculation
       const workSessionsSnap = await getDocs(collection(null as any /* firebase removed */, 'workSessions'));
       const workSessionsRaw = workSessionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -1129,6 +1077,9 @@ export const Dashboard: React.FC = () => {
           noHocPhi: Math.round(totalDebt * 0.4)
         },
         totalRevenue,
+        expectedScheduleRevenue,
+        scheduleSessionCount,
+        totalContractRevenue,
         totalDebt,
         totalBadDebt,
         badDebtStudents,
@@ -1190,6 +1141,9 @@ export const Dashboard: React.FC = () => {
         revenueData: [],
         debtStats: { noPhi: 0, noHocPhi: 0 },
         totalRevenue: 0,
+        expectedScheduleRevenue: 0,
+        scheduleSessionCount: 0,
+        totalContractRevenue: 0,
         totalDebt: 0,
         totalBadDebt: 0,
         badDebtStudents: 0,
@@ -1229,7 +1183,7 @@ export const Dashboard: React.FC = () => {
 
   // Pie chart: Doanh số vs Nợ phí
   const revenueDebtPieData = [
-    { name: 'Đã thanh toán', value: stats.totalRevenue, color: '#3B82F6' },
+    { name: 'Dự kiến (TKB)', value: stats.expectedScheduleRevenue, color: '#3B82F6' },
     { name: 'Nợ phí', value: stats.totalDebt, color: '#F59E0B' },
   ];
 
@@ -1487,64 +1441,48 @@ export const Dashboard: React.FC = () => {
             {/* Revenue Comparison - Only for revenue-allowed roles */}
             {canSeeRevenue && (
             <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-6 shadow-lg shadow-slate-200/50 border border-white/60 hover:shadow-xl hover:shadow-emerald-100/30 transition-all duration-300">
-              <div className="flex justify-between items-center mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl shadow-lg">
-                    <Wallet className="text-white" size={20} />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-800">Doanh thu</h3>
-                    <span className="text-xs text-gray-500">{currentMonth}</span>
-                  </div>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl shadow-lg">
+                  <Wallet className="text-white" size={20} />
                 </div>
-                <div className="text-right">
-                  <div className="text-2xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                    {formatCurrency(stats.totalRevenue)}
-                  </div>
+                <div>
+                  <h3 className="font-bold text-gray-800">Doanh thu từng lớp</h3>
+                  <span className="text-xs text-gray-500">Hiện diện × học phí · {currentMonth}</span>
                 </div>
               </div>
-              {stats.revenueData.length > 0 ? (
-                <>
-                  <div className="h-44">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart 
-                        data={stats.revenueData.map(r => ({ name: r.month, value: r.expected || r.actual }))}
-                        margin={{ top: 10, right: 10, left: 10, bottom: 0 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-                        <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                        <YAxis tick={{ fontSize: 10, fill: '#6b7280' }} tickFormatter={(v) => `${(v/1000000).toFixed(0)}tr`} axisLine={false} tickLine={false} />
-                        <Tooltip 
-                          formatter={(value: number) => formatCurrency(value)}
-                          contentStyle={{ background: 'rgba(255,255,255,0.95)', border: 'none', borderRadius: '12px', boxShadow: '0 10px 40px rgba(0,0,0,0.1)' }}
-                        />
-                        <Bar dataKey="value" radius={[8, 8, 0, 0]}>
-                          <Cell fill="#0D9488" />
-                          <Cell fill="#10b981" />
-                          <Cell fill="#f43f5e" />
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex gap-4 mt-4 text-xs justify-center">
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-teal-50 rounded-full">
-                      <div className="w-2.5 h-2.5 bg-teal-500 rounded-full"></div>
-                      <span className="text-gray-700">Kỳ vọng</span>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 rounded-full">
-                      <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full"></div>
-                      <span className="text-gray-700">Thực tế</span>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 rounded-full">
-                      <div className="w-2.5 h-2.5 bg-rose-500 rounded-full"></div>
-                      <span className="text-gray-700">Chênh lệch</span>
-                    </div>
-                  </div>
-                </>
+              <div className="text-center mb-4">
+                <div className="text-3xl font-bold text-emerald-600">
+                  {formatCurrency(stats.totalRevenue)}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Tổng {stats.revenueByClass.length} lớp có điểm danh</p>
+              </div>
+              {stats.revenueByClass.length > 0 ? (
+                <div className="border border-gray-100 rounded-xl overflow-hidden max-h-52 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-emerald-50/80 sticky top-0">
+                      <tr>
+                        <th className="text-left py-2.5 px-3 font-medium text-gray-600">Lớp học</th>
+                        <th className="text-right py-2.5 px-3 font-medium text-gray-600">Doanh thu</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...stats.revenueByClass]
+                        .sort((a, b) => b.value - a.value)
+                        .map((item) => (
+                          <tr key={item.name} className="border-t border-gray-100 hover:bg-emerald-50/40">
+                            <td className="py-2.5 px-3 text-gray-800 font-medium">{item.name}</td>
+                            <td className="py-2.5 px-3 text-right font-semibold text-emerald-600">
+                              {formatCurrency(item.value)}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
                 <div className="h-44 flex flex-col items-center justify-center text-gray-400">
                   <Wallet size={40} className="mb-2 opacity-30" />
-                  <span className="text-sm">Chưa có dữ liệu doanh thu</span>
+                  <span className="text-sm">Chưa có dữ liệu doanh thu điểm danh</span>
                 </div>
               )}
             </div>
@@ -1558,7 +1496,7 @@ export const Dashboard: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="font-bold text-gray-800">Tăng trưởng học phí dự kiến</h3>
-                    <p className="text-xs text-gray-500">Theo ngày, tháng hoặc năm</p>
+                    <p className="text-xs text-gray-500">Sĩ số × học phí × buổi trên TKB</p>
                   </div>
                 </div>
                 <div className="inline-flex rounded-xl border border-teal-100 bg-teal-50 p-1 text-xs font-semibold">
@@ -1697,7 +1635,7 @@ export const Dashboard: React.FC = () => {
                 </div>
                 <div className="text-right">
                   <div className="text-xl font-bold bg-gradient-to-r from-[#FF6B5A] to-[#FF8F7A] bg-clip-text text-transparent">
-                    {formatCurrency(revenuePieData.reduce((sum, item) => sum + item.value, 0) || stats.totalRevenue)}
+                    {formatCurrency(revenuePieData.reduce((sum, item) => sum + item.value, 0))}
                   </div>
                   <span className="text-xs text-gray-500">{currentMonth}</span>
                 </div>
@@ -1740,13 +1678,16 @@ export const Dashboard: React.FC = () => {
                   <div className="p-2 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl shadow-lg">
                     <DollarSign className="text-white" size={20} />
                   </div>
-                  <h3 className="font-bold text-gray-800">Doanh số / Nợ phí</h3>
+                  <div>
+                    <h3 className="font-bold text-gray-800">Doanh số / Nợ phí</h3>
+                    <span className="text-xs text-gray-500">Dự kiến theo thời khoá biểu · {currentMonth}</span>
+                  </div>
                 </div>
                 <div className="text-right">
                   <div className="text-xl font-bold bg-gradient-to-r from-amber-600 to-orange-600 bg-clip-text text-transparent">
-                    {formatCurrency(stats.totalRevenue + stats.totalDebt)}
+                    {formatCurrency(stats.expectedScheduleRevenue)}
                   </div>
-                  <span className="text-xs text-gray-500">Tổng cộng</span>
+                  <span className="text-xs text-gray-500">{stats.scheduleSessionCount} buổi trên TKB</span>
                 </div>
               </div>
               <div className="h-48">
@@ -1776,8 +1717,13 @@ export const Dashboard: React.FC = () => {
               </div>
               <div className="flex flex-wrap justify-between items-center mt-4 pt-4 border-t border-gray-100 gap-2">
                 <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                  <span className="text-sm text-gray-600">Dự kiến (TKB):</span>
+                  <span className="font-semibold text-blue-600">{formatCurrency(stats.expectedScheduleRevenue)}</span>
+                </div>
+                <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-teal-500"></div>
-                  <span className="text-sm text-gray-600">Đã thu:</span>
+                  <span className="text-sm text-gray-600">Thực tế điểm danh:</span>
                   <span className="font-semibold text-teal-600">{formatCurrency(stats.totalRevenue)}</span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -1962,7 +1908,7 @@ export const Dashboard: React.FC = () => {
                   <thead className="bg-teal-50/50 border-b-2 border-teal-100">
                     <tr>
                       <th className="text-left py-2.5 px-3 font-medium text-gray-600">
-                        {statsCategory === 'salary' ? 'Tên nhân viên' : statsCategory === 'students' ? 'Tên lớp' : 'Nguồn'}
+                        {statsCategory === 'salary' ? 'Tên nhân viên' : statsCategory === 'students' ? 'Tên lớp' : 'Tên lớp'}
                       </th>
                       <th className="text-right py-2.5 px-3 font-medium text-gray-600">
                         {statsCategory === 'salary' ? 'Lương tạm tính' : statsCategory === 'students' ? 'Số học sinh' : 'Doanh thu'}
@@ -2019,54 +1965,6 @@ export const Dashboard: React.FC = () => {
                         </tr>
                       );
                     })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* DIỄN GIẢI HẠNG MỤC */}
-            <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg shadow-slate-200/50 border border-white/60 overflow-hidden hover:shadow-xl transition-all duration-300">
-              <div className="bg-gradient-to-r from-slate-500 to-gray-600 p-4 text-center">
-                <div className="flex items-center justify-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-xl">
-                    <ChevronRight className="text-white" size={20} />
-                  </div>
-                  <h3 className="font-bold text-white">DIỄN GIẢI HẠNG MỤC</h3>
-                </div>
-              </div>
-              <div className="p-4">
-                <table className="w-full text-sm">
-                  <thead className="text-gray-500 border-b-2 border-gray-200">
-                    <tr>
-                      <th className="text-left py-2 font-medium">Hạng mục</th>
-                      <th className="text-left py-2 font-medium">Diễn giải</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Tỉ lệ đi học</td>
-                      <td className="py-2.5 text-gray-500 italic">Tỉ lệ chuyên cần của toàn trung tâm</td>
-                    </tr>
-                    <tr className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Tỉ lệ bồi bài</td>
-                      <td className="py-2.5 text-gray-500 italic">Tỉ lệ nghỉ được bồi</td>
-                    </tr>
-                    <tr className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Số lượng học sinh</td>
-                      <td className="py-2.5 text-gray-500 italic">Số học sinh đang học + nợ phí đang học</td>
-                    </tr>
-                    <tr className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Doanh thu thực tế</td>
-                      <td className="py-2.5 text-gray-500 italic">Doanh thu thực tế hiện tại</td>
-                    </tr>
-                    <tr className="border-b border-gray-100 hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Lợi nhuận thực tế</td>
-                      <td className="py-2.5 text-gray-500 italic">Doanh thu - chi phí GV + trợ giảng</td>
-                    </tr>
-                    <tr className="hover:bg-gray-50/50 transition-colors">
-                      <td className="py-2.5 font-medium text-gray-700">Lương nhân viên</td>
-                      <td className="py-2.5 text-gray-500 italic">Xếp hạng lương nhận được của NV</td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
@@ -2215,227 +2113,6 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Existing Widgets Row */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-          {/* Left Column - Products */}
-          <div className="space-y-6">
-            {/* Vật phẩm còn lại trong kho */}
-            <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg shadow-slate-200/50 border border-white/60 overflow-hidden hover:shadow-xl hover:shadow-amber-100/30 transition-all duration-300">
-              <div className="bg-gradient-to-r from-orange-500 to-amber-600 p-4 text-center">
-                <div className="flex items-center justify-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-xl">
-                    <Box className="text-white" size={20} />
-                  </div>
-                  <h3 className="font-bold text-white">VẬT PHẨM CÒN LẠI TRONG KHO</h3>
-                </div>
-              </div>
-              <div className="p-4">
-                <div className="flex items-center gap-2 text-sm mb-4 p-3 bg-amber-50 rounded-xl border border-amber-100">
-                  <span className="text-gray-600">Hiển thị</span>
-                  <select
-                    value={stockFilter}
-                    onChange={(e) => setStockFilter(e.target.value as any)}
-                    className="text-amber-600 font-semibold bg-transparent border-none cursor-pointer focus:outline-none"
-                  >
-                    <option value="low">Sắp hết hàng</option>
-                    <option value="all">Tất cả</option>
-                  </select>
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-amber-50/50 border-b-2 border-amber-100">
-                    <tr>
-                      <th className="text-left py-2.5 px-3 font-medium text-gray-600">Tên sản phẩm</th>
-                      <th className="text-right py-2.5 px-3 font-medium text-gray-600">Số lượng</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const filteredProducts = stockFilter === 'low'
-                        ? allProducts.filter(p => p.stock < (p.minStock || 10))
-                        : allProducts;
-
-                      return filteredProducts.length > 0 ? (
-                        filteredProducts.map((item, idx) => (
-                          <tr key={idx} className="border-b border-gray-100 hover:bg-amber-50/30 transition-colors">
-                            <td className="py-2.5 px-3 text-gray-700">{item.name}</td>
-                            <td className={`py-2.5 px-3 text-right font-bold ${item.stock < 5 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                              <span className={`px-2 py-1 rounded-full ${item.stock < 5 ? 'bg-rose-100' : 'bg-emerald-100'}`}>
-                                {item.stock}
-                              </span>
-                            </td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={2} className="py-8 text-center text-gray-400">
-                            <Box size={32} className="mx-auto mb-2 opacity-30" />
-                            {stockFilter === 'low' ? 'Không có sản phẩm sắp hết hàng' : 'Chưa có dữ liệu sản phẩm trong kho'}
-                          </td>
-                        </tr>
-                      );
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column - Birthdays */}
-          <div className="space-y-6">
-            {/* SINH NHẬT */}
-            <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-lg shadow-slate-200/50 border border-white/60 overflow-hidden hover:shadow-xl hover:shadow-[#FF6B5A]/10 transition-all duration-300">
-              <div className="bg-gradient-to-r from-[#FF6B5A] to-[#FF8F7A] p-4 text-center">
-                <div className="flex items-center justify-center gap-3 mb-3">
-                  <div className="p-2 bg-white/20 rounded-xl">
-                    <Cake className="text-white" size={20} />
-                  </div>
-                  <h3 className="font-bold text-white">SINH NHẬT</h3>
-                </div>
-                <div className="flex justify-center gap-2">
-                  <button
-                    onClick={() => setBirthdayType('staff')}
-                    className={`px-4 py-1.5 text-sm font-semibold rounded-full transition-all ${
-                      birthdayType === 'staff'
-                        ? 'bg-white text-[#FF6B5A] shadow-md'
-                        : 'bg-white/20 text-white hover:bg-white/30'
-                    }`}
-                  >
-                    Nhân sự
-                  </button>
-                  <button
-                    onClick={() => setBirthdayType('student')}
-                    className={`px-4 py-1.5 text-sm font-semibold rounded-full transition-all ${
-                      birthdayType === 'student'
-                        ? 'bg-white text-[#FF6B5A] shadow-md'
-                        : 'bg-white/20 text-white hover:bg-white/30'
-                    }`}
-                  >
-                    Học sinh
-                  </button>
-                </div>
-              </div>
-              <div className="p-4">
-                <div className="flex flex-wrap items-center gap-3 text-sm mb-4 p-3 bg-orange-50 rounded-xl border border-orange-100">
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-600">Hiển thị theo</span>
-                    <select
-                      value={birthdayFilter}
-                      onChange={(e) => setBirthdayFilter(e.target.value as any)}
-                      className="text-[#FF6B5A] font-semibold bg-transparent border-none cursor-pointer focus:outline-none"
-                    >
-                      <option value="today">Hôm nay</option>
-                      <option value="week">Tuần này</option>
-                      <option value="month">Tháng này</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-400">|</span>
-                    <span className="text-gray-600">Cơ sở</span>
-                    <select
-                      value={birthdayBranch}
-                      onChange={(e) => setBirthdayBranch(e.target.value)}
-                      className="text-[#FF6B5A] font-semibold bg-transparent border-none cursor-pointer focus:outline-none"
-                    >
-                      <option value="all">Tất cả</option>
-                      {centerList.map(c => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-orange-50/50 border-b-2 border-orange-100">
-                    <tr>
-                      <th className="text-left py-2.5 px-3 font-medium text-gray-600">{birthdayType === 'staff' ? 'Tên nhân sự' : 'Tên học viên'}</th>
-                      <th className="text-center py-2.5 px-3 font-medium text-gray-600">Ngày SN</th>
-                      {birthdayType === 'student' && (
-                        <>
-                          <th className="text-center py-2.5 px-2 font-medium text-gray-600 whitespace-nowrap">Chuẩn bị</th>
-                          <th className="text-center py-2.5 px-2 font-medium text-gray-600 whitespace-nowrap">Đã tặng</th>
-                        </>
-                      )}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      const now = new Date();
-                      const today = now.getDate();
-                      const thisMonth = now.getMonth();
-                      const thisYear = now.getFullYear();
-
-                      const birthdayData = birthdayType === 'staff' ? stats.upcomingBirthdays : stats.studentBirthdays;
-
-                      const filteredBirthdays = birthdayData.filter((item: any) => {
-                        const [day, month] = item.date.split('/').map(Number);
-
-                        // Filter by branch for both staff and students
-                        if (birthdayBranch !== 'all') {
-                          if (item.branch !== birthdayBranch) return false;
-                        }
-
-                        if (birthdayFilter === 'today') {
-                          return day === today && month === thisMonth + 1;
-                        } else if (birthdayFilter === 'week') {
-                          const bdayThisYear = new Date(thisYear, month - 1, day);
-                          const diffDays = Math.ceil((bdayThisYear.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                          return diffDays >= 0 && diffDays <= 7;
-                        } else {
-                          return month === thisMonth + 1;
-                        }
-                      });
-
-                      return filteredBirthdays.length > 0 ? (
-                        filteredBirthdays.map((item: any, idx: number) => (
-                          <tr key={idx} className="border-b border-gray-100 hover:bg-orange-50/30 transition-colors">
-                            <td className="py-2.5 px-3 text-gray-700">{item.name}</td>
-                            <td className="py-2.5 px-3 text-center font-medium text-[#FF6B5A]">{item.date}</td>
-                            {birthdayType === 'student' && (
-                              <>
-                                <td className="py-2.5 px-2 text-center">
-                                  <button
-                                    onClick={() => toggleGiftStatus(item.id, item.name, 'giftPrepared')}
-                                    className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-all ${
-                                      birthdayGifts[item.id]?.giftPrepared
-                                        ? 'bg-emerald-500 border-emerald-500 text-white'
-                                        : 'border-gray-300 hover:border-emerald-400'
-                                    }`}
-                                    title="Đã chuẩn bị quà"
-                                  >
-                                    {birthdayGifts[item.id]?.giftPrepared && <Gift size={14} />}
-                                  </button>
-                                </td>
-                                <td className="py-2.5 px-2 text-center">
-                                  <button
-                                    onClick={() => toggleGiftStatus(item.id, item.name, 'giftGiven')}
-                                    className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-all ${
-                                      birthdayGifts[item.id]?.giftGiven
-                                        ? 'bg-[#FF6B5A] border-[#FF6B5A] text-white'
-                                        : 'border-gray-300 hover:border-[#FF6B5A]'
-                                    }`}
-                                    title="Đã tặng quà"
-                                  >
-                                    {birthdayGifts[item.id]?.giftGiven && <Heart size={14} />}
-                                  </button>
-                                </td>
-                              </>
-                            )}
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={birthdayType === 'student' ? 4 : 2} className="py-6 text-center text-gray-400">
-                            <Cake size={32} className="mx-auto mb-2 opacity-30" />
-                            Không có sinh nhật {birthdayFilter === 'today' ? 'hôm nay' : birthdayFilter === 'week' ? 'tuần này' : 'tháng này'}
-                          </td>
-                        </tr>
-                      );
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
         </>
         )}
 

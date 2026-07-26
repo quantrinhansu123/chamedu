@@ -1,6 +1,6 @@
 ﻿/**
  * Attendance Page
- * Điểm danh với 5 trạng thái: Đúng giờ, Trễ giờ, Vắng, Bảo lưu, Đã bồi
+ * Điểm danh với 4 trạng thái: Đúng giờ, Trễ giờ, Vắng, Nghỉ có phép
  * Logic: Vắng  → Auto tạo record bồi bài
  * + Tab Rà soát điểm danh cho lễ tân
  */
@@ -8,10 +8,21 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
-import { Calendar, Save, CheckCircle, AlertCircle, BookOpen, Users, Plus, ClipboardCheck, XCircle, AlertTriangle, ChevronDown, Trash2, Printer } from 'lucide-react';
+import { Calendar, Save, CheckCircle, AlertCircle, BookOpen, Users, Plus, ClipboardCheck, XCircle, AlertTriangle, ChevronDown, Trash2, Printer, Pencil } from 'lucide-react';
 import { printSessionCommentSlip } from '../src/utils/commentSlipPrint';
 import { ModalPortal } from '@/components/modal-portal';
 import { SearchableClassDropdown, LearningMaterialPickerModal, AttitudeCommentField } from '../src/features/attendance';
+import {
+  HomeworkScoreModal,
+  type HomeworkScoreItem,
+  type HomeworkScoreStatus,
+  type HomeworkScoreStudentRecord,
+} from '../src/features/homework/components';
+import {
+  getHomeworkRecord,
+  getHomeworkStatuses,
+  saveHomeworkRecord,
+} from '../src/services/homeworkService';
 import { getLearningMaterialsData, type LearningMaterialsData } from '../src/services/learningMaterialService';
 import {
   serializeAttentionCard,
@@ -31,7 +42,7 @@ import {
   type CheckExerciseTagsData,
   type LessonExerciseTagsData,
 } from '../src/utils/learningMaterialNotes';
-import { AttendanceStatus, AttendanceRecord, StudentStatus } from '../types';
+import { AttendanceStatus, AttendanceRecord, StudentStatus, isExcusedAttendanceStatus, isSessionRevenueAttendanceStatus } from '../types';
 import { useClasses } from '../src/hooks/useClasses';
 import { useStudents } from '../src/hooks/useStudents';
 import { useAttendance } from '../src/hooks/useAttendance';
@@ -67,6 +78,8 @@ interface StudentAttendanceState {
   attentionCard: string;
   lessonExerciseTags: string;
   checkExerciseTags: string;
+  /** Nhiệm vụ giao cho học sinh */
+  task: string;
   // Thông tin Điểm số
   homeworkCompletion?: number;  // % BTVN (0-100)
   testName?: string;            // Tên bài KT
@@ -199,6 +212,7 @@ export const Attendance: React.FC = () => {
     return isValidDateParam(dateParam) ? (dateParam as string) : getTodayLocalDate();
   });
   const [attendanceData, setAttendanceData] = useState<StudentAttendanceState[]>([]);
+  const [attendanceUnitPrice, setAttendanceUnitPrice] = useState(0);
   const [existingRecord, setExistingRecord] = useState<AttendanceRecord | null>(null);
   const [saving, setSaving] = useState(false);
   const [isResetting, setIsResetting] = useState(false); // Flag to prevent sync useEffect from overwriting reset
@@ -208,8 +222,22 @@ export const Attendance: React.FC = () => {
     return mode === 'manual' ? false : true;
   }); // Default to session mode
   const [showAddSessionModal, setShowAddSessionModal] = useState(false);
-  const [showGradeFields, setShowGradeFields] = useState(false);
   const [learningMaterials, setLearningMaterials] = useState<LearningMaterialsData | null>(null);
+
+  // BTVN score modal (integrated into attendance view)
+  const DEFAULT_HOMEWORK_STATUSES: HomeworkScoreStatus[] = [
+    { value: 'completed', label: 'Đã làm', color: 'bg-green-500', textColor: 'text-white' },
+    { value: 'not_completed', label: 'Chưa làm', color: 'bg-red-500', textColor: 'text-white' },
+    { value: 'no_homework', label: 'Không có bài', color: 'bg-yellow-400', textColor: 'text-gray-800' },
+    { value: 'absent', label: 'Nghỉ học', color: 'bg-blue-400', textColor: 'text-white' },
+  ];
+  const [showHomeworkScoreModal, setShowHomeworkScoreModal] = useState(false);
+  const [homeworkStatuses, setHomeworkStatuses] = useState<HomeworkScoreStatus[]>(DEFAULT_HOMEWORK_STATUSES);
+  const [homeworkItems, setHomeworkItems] = useState<HomeworkScoreItem[]>([]);
+  const [homeworkStudentRecords, setHomeworkStudentRecords] = useState<HomeworkScoreStudentRecord[]>([]);
+  const [homeworkRecordId, setHomeworkRecordId] = useState<string | null>(null);
+  const [savingHomeworkScores, setSavingHomeworkScores] = useState(false);
+  const [loadingHomeworkScores, setLoadingHomeworkScores] = useState(false);
   const [materialPicker, setMaterialPicker] = useState<{
     studentId: string;
     studentName: string;
@@ -426,6 +454,18 @@ export const Attendance: React.FC = () => {
     StudentStatus.DEBT,
   ];
   const selectedClass = classes.find(c => c.id === selectedClassId);
+  const defaultAttendanceUnitPrice = useMemo(() => {
+    const tuitionFee = Number(selectedClass?.tuitionFee || 0);
+    const totalSessions = Number(selectedClass?.totalSessions || 0);
+    return totalSessions > 0 ? Math.round(tuitionFee / totalSessions) : 0;
+  }, [selectedClass?.tuitionFee, selectedClass?.totalSessions]);
+
+  useEffect(() => {
+    setAttendanceUnitPrice(existingRecord?.unitPrice && existingRecord.unitPrice > 0
+      ? existingRecord.unitPrice
+      : defaultAttendanceUnitPrice);
+  }, [selectedClassId, existingRecord?.id, existingRecord?.unitPrice, defaultAttendanceUnitPrice]);
+
   const classStudents = useMemo(() => {
     return allStudents.filter(s => 
       (s.classId === selectedClassId || 
@@ -510,6 +550,7 @@ export const Attendance: React.FC = () => {
             attentionCard: '',
             lessonExerciseTags: '',
             checkExerciseTags: '',
+            task: '',
             homeworkCompletion: undefined,
             testName: '',
             score: undefined,
@@ -533,7 +574,7 @@ export const Attendance: React.FC = () => {
   const studentAttendanceKey = useMemo(() => {
     if (studentAttendance.length === 0) return '';
     return studentAttendance.map(sa => 
-      `${sa.studentId}:${sa.status || ''}:${sa.note || ''}:${sa.attitudeComment || ''}:${sa.attentionCard || ''}:${sa.lessonExerciseTags || ''}:${sa.checkExerciseTags || ''}`
+      `${sa.studentId}:${sa.status || ''}:${sa.note || ''}:${sa.attitudeComment || ''}:${sa.attentionCard || ''}:${sa.lessonExerciseTags || ''}:${sa.checkExerciseTags || ''}:${sa.task || ''}`
     ).sort().join('|');
   }, [studentAttendance]);
   
@@ -553,6 +594,7 @@ export const Attendance: React.FC = () => {
           attentionCard: existing?.attentionCard || '',
           lessonExerciseTags: existing?.lessonExerciseTags || '',
           checkExerciseTags: existing?.checkExerciseTags || '',
+          task: existing?.task || '',
           homeworkCompletion: existing?.homeworkCompletion,
           testName: existing?.testName || '',
           score: existing?.score,
@@ -578,6 +620,7 @@ export const Attendance: React.FC = () => {
             p.attentionCard !== n.attentionCard ||
             p.lessonExerciseTags !== n.lessonExerciseTags ||
             p.checkExerciseTags !== n.checkExerciseTags ||
+            p.task !== n.task ||
             p.homeworkCompletion !== n.homeworkCompletion ||
             p.testName !== n.testName ||
             p.score !== n.score ||
@@ -600,6 +643,18 @@ export const Attendance: React.FC = () => {
     setAttendanceData(prev =>
       prev.map(s => (s.studentId === studentId ? { ...s, note } : s))
     );
+  };
+
+  const handleTaskChange = (studentId: string, task: string) => {
+    setAttendanceData(prev =>
+      prev.map(s => (s.studentId === studentId ? { ...s, task } : s))
+    );
+  };
+
+  const handleBulkTaskFill = (task: string) => {
+    const value = task.trim();
+    if (!value) return;
+    setAttendanceData(prev => prev.map(s => ({ ...s, task: value })));
   };
 
   const handleAttitudeCommentChange = (studentId: string, attitudeComment: string) => {
@@ -808,6 +863,183 @@ export const Attendance: React.FC = () => {
     );
   };
 
+  const buildHomeworkStudentRecords = (
+    homeworks: HomeworkScoreItem[],
+    existingRecords?: HomeworkScoreStudentRecord[]
+  ): HomeworkScoreStudentRecord[] => {
+    const existingById = new Map((existingRecords || []).map((r) => [r.studentId, r]));
+    return attendanceData.map((student) => {
+      const existing = existingById.get(student.studentId);
+      const homeworksMap: HomeworkScoreStudentRecord['homeworks'] = {};
+      homeworks.forEach((hw) => {
+        homeworksMap[hw.id] = existing?.homeworks?.[hw.id] || {
+          status: student.status === AttendanceStatus.ABSENT ? 'absent' : 'not_completed',
+          score: null,
+        };
+      });
+      return {
+        studentId: student.studentId,
+        studentName: student.studentName,
+        homeworks: homeworksMap,
+        note: existing?.note || '',
+      };
+    });
+  };
+
+  const handleOpenHomeworkScoreModal = async () => {
+    if (!selectedClassId || attendanceData.length === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng chọn lớp và có học sinh để nhập điểm BTVN.' });
+      return;
+    }
+    if (useSessionMode && !selectedSession?.id) {
+      setMessage({ type: 'error', text: 'Vui lòng chọn buổi học trước khi nhập điểm BTVN.' });
+      return;
+    }
+
+    setLoadingHomeworkScores(true);
+    try {
+      const statuses = await getHomeworkStatuses(DEFAULT_HOMEWORK_STATUSES);
+      setHomeworkStatuses(statuses);
+
+      const sessionId = selectedSession?.id || `date_${selectedClassId}_${attendanceDate}`;
+      const existing = await getHomeworkRecord(selectedClassId, sessionId);
+      const homeworks =
+        existing?.homeworks?.length
+          ? existing.homeworks.map((hw) => ({ id: hw.id, name: hw.name }))
+          : [{ id: `hw_${Date.now()}`, name: 'BTVN' }];
+
+      setHomeworkItems(homeworks);
+      setHomeworkRecordId(existing?.id || null);
+      setHomeworkStudentRecords(buildHomeworkStudentRecords(homeworks, existing?.studentRecords));
+      setShowHomeworkScoreModal(true);
+    } catch (err) {
+      console.error('[Attendance] load homework scores:', err);
+      setMessage({ type: 'error', text: 'Không thể tải dữ liệu BTVN. Vui lòng thử lại.' });
+    } finally {
+      setLoadingHomeworkScores(false);
+    }
+  };
+
+  const handleHomeworkStatusChange = (studentId: string, homeworkId: string, status: string) => {
+    setHomeworkStudentRecords((prev) =>
+      prev.map((record) =>
+        record.studentId !== studentId
+          ? record
+          : {
+              ...record,
+              homeworks: {
+                ...record.homeworks,
+                [homeworkId]: { ...record.homeworks[homeworkId], status },
+              },
+            }
+      )
+    );
+  };
+
+  const handleHomeworkScoreChange = (studentId: string, homeworkId: string, score: string) => {
+    let scoreNum: number | null = null;
+    if (score !== '') {
+      const parsed = parseFloat(score);
+      if (!Number.isNaN(parsed)) scoreNum = Math.min(10, Math.max(0, parsed));
+    }
+    setHomeworkStudentRecords((prev) =>
+      prev.map((record) =>
+        record.studentId !== studentId
+          ? record
+          : {
+              ...record,
+              homeworks: {
+                ...record.homeworks,
+                [homeworkId]: { ...record.homeworks[homeworkId], score: scoreNum },
+              },
+            }
+      )
+    );
+  };
+
+  const handleHomeworkNoteChange = (studentId: string, note: string) => {
+    setHomeworkStudentRecords((prev) =>
+      prev.map((record) => (record.studentId === studentId ? { ...record, note } : record))
+    );
+  };
+
+  const handleAddHomeworkInModal = (name: string) => {
+    const newHomework: HomeworkScoreItem = { id: `hw_${Date.now()}`, name };
+    setHomeworkItems((prev) => [...prev, newHomework]);
+    setHomeworkStudentRecords((prev) =>
+      prev.map((record) => ({
+        ...record,
+        homeworks: {
+          ...record.homeworks,
+          [newHomework.id]: { status: 'not_completed', score: null },
+        },
+      }))
+    );
+  };
+
+  const syncHomeworkScoresToAttendance = (records: HomeworkScoreStudentRecord[], homeworks: HomeworkScoreItem[]) => {
+    setAttendanceData((prev) =>
+      prev.map((student) => {
+        const record = records.find((r) => r.studentId === student.studentId);
+        if (!record || homeworks.length === 0) return student;
+
+        const scores = homeworks
+          .map((hw) => record.homeworks[hw.id]?.score)
+          .filter((s): s is number => typeof s === 'number');
+        const completedCount = homeworks.filter(
+          (hw) => record.homeworks[hw.id]?.status === 'completed'
+        ).length;
+        const avgScore =
+          scores.length > 0
+            ? Math.round((scores.reduce((sum, s) => sum + s, 0) / scores.length) * 10) / 10
+            : undefined;
+        const completionPct = Math.round((completedCount / homeworks.length) * 100);
+
+        return {
+          ...student,
+          score: avgScore ?? student.score,
+          homeworkCompletion: completionPct,
+          testName: homeworks.length === 1 ? homeworks[0].name : student.testName || 'BTVN',
+        };
+      })
+    );
+  };
+
+  const handleSaveHomeworkScores = async () => {
+    if (!selectedClassId || homeworkItems.length === 0) return;
+
+    setSavingHomeworkScores(true);
+    try {
+      const sessionId = selectedSession?.id || `date_${selectedClassId}_${attendanceDate}`;
+      const recordData = {
+        classId: selectedClassId,
+        className: selectedClass?.name || '',
+        sessionId,
+        sessionNumber: selectedSession?.sessionNumber || 0,
+        sessionDate: selectedSession?.date || attendanceDate,
+        homeworks: homeworkItems,
+        studentRecords: homeworkStudentRecords,
+        updatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        createdBy: staffData?.name || user?.displayName || 'Unknown',
+      };
+
+      const id = await saveHomeworkRecord(recordData, homeworkRecordId);
+      setHomeworkRecordId(id);
+      syncHomeworkScoresToAttendance(homeworkStudentRecords, homeworkItems);
+      setShowHomeworkScoreModal(false);
+      setMessage({
+        type: 'success',
+        text: 'Đã lưu điểm BTVN và đồng bộ vào bảng điểm danh. Nhớ bấm "Lưu điểm danh" để ghi nhận.',
+      });
+    } catch (err: any) {
+      console.error('[Attendance] save homework scores:', err);
+      setMessage({ type: 'error', text: 'Không thể lưu điểm BTVN: ' + (err?.message || err) });
+    } finally {
+      setSavingHomeworkScores(false);
+    }
+  };
+
   const handlePrintCommentSlip = (student: StudentAttendanceState) => {
     if (!selectedClass) return;
     const dateToUse = selectedSession?.date || attendanceDate;
@@ -832,6 +1064,14 @@ export const Attendance: React.FC = () => {
 
   const handleBulkStatus = (status: AttendanceStatus) => {
     setAttendanceData(prev => prev.map(s => ({ ...s, status })));
+  };
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat('vi-VN').format(Math.round(Number(value) || 0));
+
+  const parseCurrencyInput = (value: string) => {
+    const digits = value.replace(/[^\d]/g, '');
+    return digits ? Number(digits) : 0;
   };
 
   const handleSave = async () => {
@@ -940,6 +1180,8 @@ export const Attendance: React.FC = () => {
       }
 
       const absentCount = attendanceData.filter(s => s.status === AttendanceStatus.ABSENT).length;
+      const billableStudents = attendanceData.filter(s => isSessionRevenueAttendanceStatus(s.status)).length;
+      const sessionAmount = attendanceUnitPrice * billableStudents;
 
       // Use the found session (either selected or auto-found)
       const finalSession = sessionToUse || selectedSession;
@@ -963,10 +1205,13 @@ export const Attendance: React.FC = () => {
           sessionNumber: finalSession?.sessionNumber ?? null,
           sessionId: finalSession?.id ?? null,
           totalStudents: attendanceData.length,
-          present: attendanceData.filter(s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE).length,
+          present: billableStudents,
           absent: absentCount,
-          reserved: attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
+          reserved: attendanceData.filter(s => isExcusedAttendanceStatus(s.status)).length,
           tutored: attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+          unitPrice: attendanceUnitPrice,
+          billableStudents,
+          sessionAmount,
           status: 'Đã điểm danh',
           createdBy: user?.uid ?? null,
         },
@@ -980,6 +1225,7 @@ export const Attendance: React.FC = () => {
           attentionCard: s.attentionCard,
           lessonExerciseTags: s.lessonExerciseTags,
           checkExerciseTags: s.checkExerciseTags,
+          task: s.task,
           homeworkCompletion: s.homeworkCompletion,
           testName: s.testName,
           score: s.score,
@@ -1059,6 +1305,10 @@ export const Attendance: React.FC = () => {
       const absentCount = pendingSaveData.attendanceData.filter(
         s => s.status === AttendanceStatus.ABSENT
       ).length;
+      const billableStudents = pendingSaveData.attendanceData.filter(
+        s => isSessionRevenueAttendanceStatus(s.status)
+      ).length;
+      const sessionAmount = attendanceUnitPrice * billableStudents;
 
       await saveAttendance(
         {
@@ -1069,12 +1319,13 @@ export const Attendance: React.FC = () => {
           sessionId: null,
           attendanceType: type, // 'makeup' or 'manual'
           totalStudents: pendingSaveData.attendanceData.length,
-          present: pendingSaveData.attendanceData.filter(
-            s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE
-          ).length,
+          present: billableStudents,
           absent: absentCount,
-          reserved: pendingSaveData.attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
+          reserved: pendingSaveData.attendanceData.filter(s => isExcusedAttendanceStatus(s.status)).length,
           tutored: pendingSaveData.attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+          unitPrice: attendanceUnitPrice,
+          billableStudents,
+          sessionAmount,
           status: 'Đã điểm danh',
           createdBy: user?.uid ?? null,
         },
@@ -1088,6 +1339,7 @@ export const Attendance: React.FC = () => {
           attentionCard: s.attentionCard,
           lessonExerciseTags: s.lessonExerciseTags,
           checkExerciseTags: s.checkExerciseTags,
+          task: s.task,
           homeworkCompletion: s.homeworkCompletion,
           testName: s.testName,
           score: s.score,
@@ -1377,7 +1629,10 @@ export const Attendance: React.FC = () => {
   };
 
   const getStatusStyle = (status: AttendanceStatus, current: AttendanceStatus) => {
-    const isActive = status === current && status !== AttendanceStatus.PENDING;
+    const isActive =
+      status !== AttendanceStatus.PENDING &&
+      (status === current ||
+        (status === AttendanceStatus.RESERVED && isExcusedAttendanceStatus(current)));
     const styles: Record<string, string> = {
       [AttendanceStatus.PENDING]: 'bg-white text-gray-400 border-gray-200',
       [AttendanceStatus.ON_TIME]: isActive
@@ -1390,6 +1645,10 @@ export const Attendance: React.FC = () => {
         ? 'bg-red-600 text-white border-red-600'
         : 'bg-white text-red-600 border-red-300 hover:bg-red-50',
       [AttendanceStatus.RESERVED]: isActive
+        ? 'bg-orange-500 text-white border-orange-500'
+        : 'bg-white text-orange-500 border-orange-300 hover:bg-orange-50',
+      // Legacy 'Bảo lưu' / 'Đã bồi' — vẫn tô màu khi xem bản ghi cũ
+      'Bảo lưu': isActive
         ? 'bg-orange-500 text-white border-orange-500'
         : 'bg-white text-orange-500 border-orange-300 hover:bg-orange-50',
       [AttendanceStatus.TUTORED]: isActive
@@ -1405,9 +1664,10 @@ export const Attendance: React.FC = () => {
     pending: attendanceData.filter(s => s.status === AttendanceStatus.PENDING || !s.status).length,
     present: attendanceData.filter(s => s.status === AttendanceStatus.ON_TIME || s.status === AttendanceStatus.LATE).length,
     absent: attendanceData.filter(s => s.status === AttendanceStatus.ABSENT).length,
-    reserved: attendanceData.filter(s => s.status === AttendanceStatus.RESERVED).length,
-    tutored: attendanceData.filter(s => s.status === AttendanceStatus.TUTORED).length,
+    reserved: attendanceData.filter(s => isExcusedAttendanceStatus(s.status)).length,
   };
+  const billableStudentCount = attendanceData.filter(s => isSessionRevenueAttendanceStatus(s.status)).length;
+  const sessionAmount = attendanceUnitPrice * billableStudentCount;
 
   // ========== REVIEW TAB FUNCTIONS ==========
   
@@ -1622,13 +1882,13 @@ export const Attendance: React.FC = () => {
         studentName: student.studentName,
         date: student.sessionDate,
         sessionNumber: student.sessionNumber,
-        status: isLate ? 'Đi trễ' : isReserved ? 'Bảo lưu' : 'Vắng',
+        status: isLate ? 'Đi trễ' : isReserved ? AttendanceStatus.RESERVED : 'Vắng',
         note:
           confirmDialog.reason ||
           (isLate
             ? 'Đến trễ - Rà soát điểm danh'
             : isReserved
-              ? 'Bảo lưu - Rà soát điểm danh'
+              ? 'Nghỉ có phép - Rà soát điểm danh'
               : 'Nghỉ học - Rà soát điểm danh'),
         checkedBy: staffData?.name || 'Lễ tân',
       });
@@ -1708,7 +1968,7 @@ export const Attendance: React.FC = () => {
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
                 <h2 className="text-lg font-bold text-gray-800">Điểm danh lớp học</h2>
-                <p className="text-sm text-gray-500">5 trạng thái: Đúng giờ, Trễ giờ, Vắng, Bảo lưu, Đã bồi</p>
+                <p className="text-sm text-gray-500">4 trạng thái: Đúng giờ, Trễ giờ, Vắng, Nghỉ có phép</p>
               </div>
               <div className="flex flex-wrap gap-3 w-full md:w-auto">
                 {/* Searchable class dropdown with branch filter */}
@@ -2126,7 +2386,7 @@ export const Attendance: React.FC = () => {
       ) : (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           {/* Stats Header */}
-          <div className="grid grid-cols-6 border-b border-gray-100 divide-x divide-gray-100">
+          <div className="grid grid-cols-5 border-b border-gray-100 divide-x divide-gray-100">
             <div className="p-4 text-center">
               <p className="text-xs text-gray-500 uppercase font-bold">Tổng số</p>
               <p className="text-xl font-bold text-gray-800">{stats.total}</p>
@@ -2144,17 +2404,13 @@ export const Attendance: React.FC = () => {
               <p className="text-xl font-bold text-red-700">{stats.absent}</p>
             </div>
             <div className="p-4 text-center bg-orange-50">
-              <p className="text-xs text-orange-600 uppercase font-bold">Bảo lưu</p>
+              <p className="text-xs text-orange-600 uppercase font-bold">Nghỉ có phép</p>
               <p className="text-xl font-bold text-orange-700">{stats.reserved}</p>
-            </div>
-            <div className="p-4 text-center bg-blue-50">
-              <p className="text-xs text-blue-600 uppercase font-bold">Đã bồi</p>
-              <p className="text-xl font-bold text-blue-700">{stats.tutored}</p>
             </div>
           </div>
 
           {/* Bulk Actions */}
-          <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+          <div className="p-4 bg-gray-50 border-b border-gray-100 flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3">
               <span className="text-sm font-medium text-gray-600">Điểm danh nhanh:</span>
               <button
@@ -2173,18 +2429,76 @@ export const Attendance: React.FC = () => {
                 onClick={() => handleBulkStatus(AttendanceStatus.RESERVED)}
                 className="px-3 py-1 text-xs font-medium rounded bg-orange-100 text-orange-700 hover:bg-orange-200"
               >
-                Tất cả bảo lưu
+                Tất cả nghỉ có phép
               </button>
             </div>
-            <button
-              type="button"
-              onClick={handleOpenClassLearningPicker}
-              disabled={!learningMaterials || attendanceData.length === 0}
-              className="inline-flex items-center gap-1.5 rounded border border-indigo-200 bg-white px-3 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <BookOpen size={14} />
-              Nhập bài
-            </button>
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-gray-600">
+                Tiền học/buổi
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={formatCurrency(attendanceUnitPrice)}
+                  onChange={(e) => setAttendanceUnitPrice(parseCurrencyInput(e.target.value))}
+                  className="w-28 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-right text-sm font-semibold text-gray-800 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                />
+              </label>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-800" title="Nghỉ có phép và Vắng không tính học phí">
+                <span className="font-medium">{billableStudentCount} HS</span>
+                <span className="mx-1 text-emerald-500">×</span>
+                <span>{formatCurrency(attendanceUnitPrice)} đ</span>
+                <span className="mx-1 text-emerald-500">=</span>
+                <span className="font-bold">{formatCurrency(sessionAmount)} đ</span>
+                <span className="ml-2 text-emerald-600/80">(không gồm Nghỉ có phép)</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenClassLearningPicker}
+                disabled={!learningMaterials || attendanceData.length === 0}
+                className="inline-flex items-center gap-1.5 rounded border border-indigo-200 bg-white px-3 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <BookOpen size={14} />
+                Nhập bài
+              </button>
+              <button
+                type="button"
+                onClick={handleOpenHomeworkScoreModal}
+                disabled={loadingHomeworkScores || attendanceData.length === 0 || (useSessionMode && !selectedSession)}
+                className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-white px-3 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                title="Nhập trạng thái và điểm BTVN theo buổi"
+              >
+                <Pencil size={14} />
+                {loadingHomeworkScores ? 'Đang tải...' : 'Nhập điểm BTVN'}
+              </button>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  id="bulk-task-input"
+                  placeholder="Giao nhiệm vụ cho cả lớp..."
+                  className="w-44 rounded border border-amber-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-amber-400 focus:ring-1 focus:ring-amber-100"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleBulkTaskFill((e.target as HTMLInputElement).value);
+                      (e.target as HTMLInputElement).value = '';
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={attendanceData.length === 0}
+                  onClick={() => {
+                    const input = document.getElementById('bulk-task-input') as HTMLInputElement | null;
+                    if (!input) return;
+                    handleBulkTaskFill(input.value);
+                    input.value = '';
+                  }}
+                  className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                  title="Áp dụng nhiệm vụ cho tất cả học sinh"
+                >
+                  Giao cả lớp
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Table */}
@@ -2195,14 +2509,11 @@ export const Attendance: React.FC = () => {
                 <th className="px-4 py-4 w-12">STT</th>
                 <th className="px-4 py-4">Học viên</th>
                 <th className="px-4 py-4 text-center">Trạng thái</th>
-                  {showGradeFields && (
-                  <>
                     <th className="px-4 py-4 text-center w-20">% BTVN</th>
                     <th className="px-4 py-4 w-28">Tên bài KT</th>
                     <th className="px-4 py-4 text-center w-20">Điểm</th>
-                    <th className="px-4 py-4 text-center w-24">Điểm thưxng</th>
-                  </>
-                )}
+                    <th className="px-4 py-4 text-center w-24">Điểm thưởng</th>
+                <th className="px-4 py-4 min-w-[180px]">Nhiệm vụ</th>
                 <th className="px-4 py-4">Ghi chú</th>
                 <th className="px-4 py-4">Nhận xét ý thức</th>
                 <th className="px-4 py-4">Thẻ chú ý</th>
@@ -2246,18 +2557,10 @@ export const Attendance: React.FC = () => {
                         onClick={() => handleStatusChange(student.studentId, AttendanceStatus.RESERVED)}
                         className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.RESERVED, student.status)}`}
                       >
-                        Bảo lưu
-                      </button>
-                      <button
-                        onClick={() => handleStatusChange(student.studentId, AttendanceStatus.TUTORED)}
-                        className={`px-2 py-1 rounded text-xs font-bold border transition-colors ${getStatusStyle(AttendanceStatus.TUTORED, student.status)}`}
-                      >
-                        Đã bồi
+                        Nghỉ có phép
                       </button>
                     </div>
                   </td>
-                  {showGradeFields && (
-                    <>
                       <td className="px-4 py-3">
                         <input
                           type="number"
@@ -2300,8 +2603,15 @@ export const Attendance: React.FC = () => {
                           className="w-16 px-2 py-1 border border-gray-200 rounded text-center text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                         />
                       </td>
-                    </>
-                  )}
+                  <td className="px-4 py-3">
+                    <textarea
+                      placeholder="Nhiệm vụ giao HS..."
+                      value={student.task}
+                      onChange={(e) => handleTaskChange(student.studentId, e.target.value)}
+                      rows={2}
+                      className="w-full min-w-[160px] border border-amber-100 bg-amber-50/40 rounded-lg px-2 py-1.5 text-sm text-gray-700 focus:border-amber-400 focus:ring-1 focus:ring-amber-100 outline-none resize-y"
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     <textarea
                       placeholder="Ghi chú... (Enter  đi xuđng dòng)"
@@ -2419,6 +2729,7 @@ export const Attendance: React.FC = () => {
                       attentionCard: '',
                       lessonExerciseTags: '',
                       checkExerciseTags: '',
+                      task: '',
                       punctuality: '',
                     }))
                   );
@@ -2516,6 +2827,29 @@ export const Attendance: React.FC = () => {
           onSaveAttention={(data) => handleSaveAttentionCard(materialPicker.studentId, data)}
           onSaveLessonTypes={(data) => handleSaveLessonExerciseTags(materialPicker.studentId, data)}
           onSaveCheckTags={(data) => handleSaveCheckExerciseTags(materialPicker.studentId, data)}
+        />
+      )}
+
+      {/* BTVN score entry modal */}
+      {showHomeworkScoreModal && (
+        <HomeworkScoreModal
+          className={selectedClass?.name || ''}
+          sessionLabel={
+            selectedSession
+              ? `Buổi ${selectedSession.sessionNumber} · ${selectedSession.date}`
+              : attendanceDate
+          }
+          homeworks={homeworkItems}
+          studentRecords={homeworkStudentRecords}
+          statuses={homeworkStatuses}
+          saving={savingHomeworkScores}
+          allowAddHomework
+          onAddHomework={handleAddHomeworkInModal}
+          onStatusChange={handleHomeworkStatusChange}
+          onScoreChange={handleHomeworkScoreChange}
+          onNoteChange={handleHomeworkNoteChange}
+          onSave={handleSaveHomeworkScores}
+          onClose={() => setShowHomeworkScoreModal(false)}
         />
       )}
 
@@ -2651,13 +2985,13 @@ export const Attendance: React.FC = () => {
                                   <XCircle size={14} />
                                   Vắng/Nghỉ học
                                 </button>
-                                {/* Bug 4 fix: Add Bảo lưu button */}
+                                {/* Nghỉ có phép */}
                                 <button
                                   onClick={() => openReviewConfirmDialog('reserved', student)}
                                   className="px-3 py-1.5 bg-orange-500 text-white text-xs font-medium rounded-lg hover:bg-orange-600 flex items-center gap-1"
                                 >
                                   <AlertTriangle size={14} />
-                                  Bảo lưu
+                                  Nghỉ có phép
                                 </button>
                               </div>
                             </td>
@@ -2684,6 +3018,8 @@ export const Attendance: React.FC = () => {
               Bạn có chắc chắn muốn{' '}
               {confirmDialog.type === 'late' ? (
                 <span className="text-green-600 font-medium">Xác nhận Điểm danh đến trễ</span>
+              ) : confirmDialog.type === 'reserved' ? (
+                <span className="text-orange-600 font-medium">Xác nhận Nghỉ có phép</span>
               ) : (
                 <span className="text-red-600 font-medium">Xác nhận Vắng/Nghỉ học</span>
               )}{' '}

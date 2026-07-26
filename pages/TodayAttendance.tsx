@@ -92,7 +92,7 @@ export const TodayAttendance: React.FC = () => {
       if (s.status === 'Đúng giờ') counts.onTime++;
       else if (s.status === 'Trễ giờ') counts.late++;
       else if (s.status === 'Vắng') counts.absent++;
-      else if (s.status === 'Bảo lưu') counts.reserved++;
+      else if (s.status === 'Nghỉ có phép' || s.status === 'Bảo lưu') counts.reserved++;
       else if (s.status === 'Đã bồi') counts.tutored++;
     });
     return counts;
@@ -215,7 +215,7 @@ export const TodayAttendance: React.FC = () => {
                     <div className="border-t border-gray-200 p-4 bg-gray-50">
                       <div className="mb-4">
                         <h4 className="font-semibold text-gray-700 mb-2">Chi tiết điểm danh:</h4>
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
                           <div className="bg-green-50 p-2 rounded">
                             <div className="text-green-700 font-medium">Đúng giờ</div>
                             <div className="text-lg font-bold text-green-800">{statusCount.onTime}</div>
@@ -228,13 +228,9 @@ export const TodayAttendance: React.FC = () => {
                             <div className="text-red-700 font-medium">Vắng</div>
                             <div className="text-lg font-bold text-red-800">{statusCount.absent}</div>
                           </div>
-                          <div className="bg-blue-50 p-2 rounded">
-                            <div className="text-blue-700 font-medium">Bảo lưu</div>
-                            <div className="text-lg font-bold text-blue-800">{statusCount.reserved}</div>
-                          </div>
-                          <div className="bg-purple-50 p-2 rounded">
-                            <div className="text-purple-700 font-medium">Đã bồi</div>
-                            <div className="text-lg font-bold text-purple-800">{statusCount.tutored}</div>
+                          <div className="bg-orange-50 p-2 rounded">
+                            <div className="text-orange-700 font-medium">Nghỉ có phép</div>
+                            <div className="text-lg font-bold text-orange-800">{statusCount.reserved}</div>
                           </div>
                         </div>
                       </div>
@@ -284,9 +280,9 @@ export const TodayAttendance: React.FC = () => {
                                   Vắng
                                 </span>
                               )}
-                              {student.status === 'Bảo lưu' && (
-                                <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                                  Bảo lưu
+                              {(student.status === 'Nghỉ có phép' || student.status === 'Bảo lưu') && (
+                                <span className="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs font-medium">
+                                  Nghỉ có phép
                                 </span>
                               )}
                               {student.status === 'Đã bồi' && (

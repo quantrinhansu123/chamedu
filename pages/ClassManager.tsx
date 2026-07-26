@@ -18,7 +18,6 @@ import {
   ClassFormModal,
   TestScheduleModal,
   StudentsInClassModal,
-  ClassDetailModal,
 } from '../src/features/classes/components';
 
 // Helper to safely format date (uses shared utility)
@@ -41,10 +40,8 @@ export const ClassManager: React.FC = () => {
   // Progress modal removed - progress is now auto-calculated from sessions
   const [showTestModal, setShowTestModal] = useState(false);
   const [showStudentsModal, setShowStudentsModal] = useState(false);
-  const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedClassForAction, setSelectedClassForAction] = useState<ClassModel | null>(null);
   const [selectedClassForStudents, setSelectedClassForStudents] = useState<ClassModel | null>(null);
-  const [selectedClassForDetail, setSelectedClassForDetail] = useState<ClassModel | null>(null);
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
@@ -575,16 +572,6 @@ export const ClassManager: React.FC = () => {
 
     setToast({ type: 'success', message: 'Cập nhật lớp học thành công!' });
     setTimeout(() => setToast(null), 3000);
-
-    // Wait for realtime update then reopen detail modal
-    setTimeout(() => {
-      const updatedClass = classes.find(c => c.id === id);
-      if (updatedClass) {
-        const mergedClass = { ...updatedClass, ...data };
-        setSelectedClassForDetail(mergedClass as ClassModel);
-        setShowDetailModal(true);
-      }
-    }, 200);
   };
 
   const deleteClassWithForce = async (id: string): Promise<boolean> => {
@@ -965,10 +952,7 @@ export const ClassManager: React.FC = () => {
                     
                     {/* Lớp học */}
                     <td className="px-4 py-4">
-                      <span 
-                        className="font-bold text-blue-600 hover:text-blue-800 cursor-pointer block"
-                        onClick={() => { setSelectedClassForDetail(cls); setShowDetailModal(true); }}
-                      >
+                      <span className="font-bold text-gray-900 block">
                         {cls.name}
                       </span>
                       {cls.createdDate && (
@@ -1240,26 +1224,6 @@ export const ClassManager: React.FC = () => {
           onUpdate={() => {
             // No-op: realtime listeners auto-update counts
           }}
-        />
-      )}
-
-      {/* Class Detail Modal */}
-      {showDetailModal && selectedClassForDetail && (
-        <ClassDetailModal
-          classData={selectedClassForDetail}
-          studentCounts={classStudentCounts[selectedClassForDetail.id] || { total: 0, trial: 0, active: 0, debt: 0, reserved: 0, dropped: 0, remainingSessions: 0, remainingValue: 0 }}
-          onClose={() => { setShowDetailModal(false); setSelectedClassForDetail(null); }}
-          onEdit={() => {
-            setShowDetailModal(false);
-            setEditingClass(selectedClassForDetail);
-            setShowEditModal(true);
-          }}
-          onManageStudents={() => {
-            setShowDetailModal(false);
-            setSelectedClassForStudents(selectedClassForDetail);
-            setShowStudentsModal(true);
-          }}
-          canEdit={canEditClass}
         />
       )}
 

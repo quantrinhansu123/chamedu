@@ -1,5 +1,4 @@
 import { supabase } from '../config/supabase';
-import { createAttendancePriceResolver } from './attendancePricingService';
 
 export interface RevenueByMonth {
   month: string;
@@ -35,6 +34,7 @@ export interface RevenueGrowthPoint {
 
 export interface RevenueSummary {
   totalRevenue: number;
+  totalAttendanceRevenue: number;
   paidRevenue: number;
   debtAmount: number;
   totalContracts: number;
@@ -65,11 +65,10 @@ type ContractRow = {
   branch: string | null;
 };
 
-type AttendanceRevenueRow = {
-  student_id: string | null;
+type AttendanceSessionRow = {
   class_id: string | null;
   class_name: string | null;
-  date: string | null;
+  present: number | null;
   status: string | null;
 };
 
@@ -78,14 +77,11 @@ type ClassRevenueRow = {
   name: string;
   branch: string | null;
   tuition_fee: number | null;
-  total_sessions: number | null;
 };
 
 const CATEGORY_COLORS = ['#0D9488', '#FF6B5A', '#F59E0B', '#10B981', '#6366F1', '#8B5CF6', '#06B6D4'];
 const PAID_STATUS = new Set(['Da thanh toan', 'Paid']);
 const CANCELLED_STATUS = new Set(['Da huy', 'Cancelled']);
-const PRESENT_ATTENDANCE_STATUS = new Set(['Dung gio', 'Tre gio', 'Da boi', 'Co mat', 'Den tre', 'Di tre']);
-
 const normalize = (value: string | null | undefined) =>
   (value || '')
     .normalize('NFD')
@@ -95,8 +91,6 @@ const normalize = (value: string | null | undefined) =>
 
 const isPaid = (status: string | null | undefined) => PAID_STATUS.has(normalize(status));
 const isCancelled = (status: string | null | undefined) => CANCELLED_STATUS.has(normalize(status));
-const isPresentAttendance = (status: string | null | undefined) => PRESENT_ATTENDANCE_STATUS.has(normalize(status));
-
 const toMonthKey = (dateString: string) => {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return null;
@@ -151,27 +145,30 @@ const toCategoryData = (items: Array<[string, number]>): RevenueByCategory[] => 
 
 const getAttendanceRevenueByClass = async (
   year: number,
-  branch: string
+  branch: string,
+  month = new Date().getMonth() + 1
 ): Promise<Array<[string, number]>> => {
-  const startDate = `${year}-01-01`;
-  const endDate = `${year + 1}-01-01`;
+  const endMonth = month === 12 ? 1 : month + 1;
+  const endYear = month === 12 ? year + 1 : year;
+  const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+  const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
 
   const { data: attendanceRows, error: attendanceError } = await supabase
-    .from('student_attendance')
-    .select('student_id,class_id,class_name,date,status')
+    .from('attendance')
+    .select('class_id,class_name,present,status')
     .gte('date', startDate)
     .lt('date', endDate);
   if (attendanceError) throw attendanceError;
 
-  const presentRows = ((attendanceRows || []) as AttendanceRevenueRow[]).filter(
-    (row) => row.class_id && isPresentAttendance(row.status)
+  const sessionRows = ((attendanceRows || []) as AttendanceSessionRow[]).filter(
+    (row) => row.class_id && row.status !== 'LỊCH NGHỈ CHUNG' && row.status !== 'Chưa điểm danh'
   );
-  if (presentRows.length === 0) return [];
+  if (sessionRows.length === 0) return [];
 
-  const classIds = [...new Set(presentRows.map((row) => row.class_id).filter(Boolean))] as string[];
+  const classIds = [...new Set(sessionRows.map((row) => row.class_id).filter(Boolean))] as string[];
   const { data: classRows, error: classError } = await supabase
     .from('classes')
-    .select('id,name,branch,tuition_fee,total_sessions')
+    .select('id,name,branch,tuition_fee')
     .in('id', classIds);
   if (classError) throw classError;
 
@@ -182,22 +179,18 @@ const getAttendanceRevenueByClass = async (
     classMap.set(row.id, row);
   });
 
-  const resolveUnitPrice = await createAttendancePriceResolver(
-    presentRows,
-    Array.from(classMap.values())
-  );
-
   const revenueByClass = new Map<string, number>();
-  presentRows.forEach((row) => {
+  sessionRows.forEach((row) => {
     if (!row.class_id) return;
     const cls = classMap.get(row.class_id);
     if (!cls) return;
 
-    const pricePerSession = resolveUnitPrice(row);
-    if (pricePerSession <= 0) return;
+    const tuitionFee = Number(cls.tuition_fee || 0);
+    const present = Number(row.present || 0);
+    if (tuitionFee <= 0 || present <= 0) return;
 
     const className = cls.name || row.class_name || 'Chưa gán lớp';
-    revenueByClass.set(className, (revenueByClass.get(className) || 0) + pricePerSession);
+    revenueByClass.set(className, (revenueByClass.get(className) || 0) + present * tuitionFee);
   });
 
   return Array.from(revenueByClass.entries()).sort((a, b) => b[1] - a[1]);
@@ -205,7 +198,8 @@ const getAttendanceRevenueByClass = async (
 
 export const getRevenueSummary = async (
   year = new Date().getFullYear(),
-  branch = 'all'
+  branch = 'all',
+  month = new Date().getMonth() + 1
 ): Promise<RevenueSummary> => {
   let contractsQuery = supabase
     .from('contracts')
@@ -297,10 +291,13 @@ export const getRevenueSummary = async (
     byClass.set(classId, classSummary);
   });
 
-  const attendanceRevenueByClass = await getAttendanceRevenueByClass(year, branch);
+  const attendanceRevenueByClass = await getAttendanceRevenueByClass(year, branch, month);
+  const byCategory = toCategoryData(attendanceRevenueByClass);
+  const totalAttendanceRevenue = byCategory.reduce((sum, item) => sum + item.amount, 0);
 
   return {
     totalRevenue: paidRevenue,
+    totalAttendanceRevenue,
     paidRevenue,
     debtAmount,
     totalContracts: contracts.length,
@@ -317,7 +314,7 @@ export const getRevenueSummary = async (
         studentCount: value.studentIds.size,
       }))
       .sort((a, b) => b.totalRevenue - a.totalRevenue),
-    byCategory: toCategoryData(attendanceRevenueByClass),
+    byCategory,
     growth: {
       daily: toGrowthSeries(growthDaily),
       monthly: toGrowthSeries(growthMonthly),
