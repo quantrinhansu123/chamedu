@@ -114,11 +114,11 @@ export const StudentsInClassModal: React.FC<StudentsInClassModalProps> = ({ clas
         classId: classData.id,
         className: classData.name,
         sessions: 0,
-        type: 'Ghi danh thu cong',
-        createdBy: staffData?.name || 'He thong',
+        type: 'Ghi danh thủ công',
+        createdBy: staffData?.name || 'Hệ thống',
         staff: staffData?.name,
         createdDate: new Date().toLocaleDateString('vi-VN'),
-        note: `Them vao lop ${classData.name} tu Quan ly hoc vien - khong tinh so buoi`,
+        note: `Thêm vào lớp ${classData.name} từ Quản lý học viên - không tính số buổi`,
       });
 
       await fetchStudents();
