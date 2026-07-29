@@ -1,0 +1,5 @@
+# Supabase local config — Edge Functions
+# Deploy: npx supabase functions deploy training-revenue --project-ref dunpqpiaxdcchjsmfmmc
+
+[functions.training-revenue]
+verify_jwt = false

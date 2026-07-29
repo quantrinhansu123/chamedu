@@ -10,7 +10,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "setup:admin": "node scripts/create-supabase-admin.mjs"
+    "setup:admin": "node scripts/create-supabase-admin.mjs",
+    "api:deploy-revenue": "npx supabase functions deploy training-revenue --project-ref dunpqpiaxdcchjsmfmmc"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",

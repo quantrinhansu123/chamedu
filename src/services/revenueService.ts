@@ -242,16 +242,16 @@ export const getRevenueSummary = async (
       paidContracts += 1;
     }
 
-    if (totalAmount > 0) {
+    if (actualRevenue > 0) {
       const revenueDate = getContractDate(contract);
       const date = new Date(revenueDate);
       if (!Number.isNaN(date.getTime())) {
         const dayKey = revenueDate.slice(0, 10);
         const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
         const yearKey = String(date.getFullYear());
-        addToMap(growthDaily, dayKey, formatDayLabel(revenueDate), totalAmount);
-        addToMap(growthMonthly, monthKey, `T${date.getMonth() + 1}/${date.getFullYear()}`, totalAmount);
-        addToMap(growthYearly, yearKey, yearKey, totalAmount);
+        addToMap(growthDaily, dayKey, formatDayLabel(revenueDate), actualRevenue);
+        addToMap(growthMonthly, monthKey, `T${date.getMonth() + 1}/${date.getFullYear()}`, actualRevenue);
+        addToMap(growthYearly, yearKey, yearKey, actualRevenue);
       }
     }
     if (remainingAmount > 0) {

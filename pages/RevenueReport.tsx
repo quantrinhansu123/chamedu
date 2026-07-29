@@ -7,6 +7,7 @@ import React, { useState } from 'react';
 import { DollarSign, TrendingUp, AlertTriangle, FileText, BarChart3 } from 'lucide-react';
 import { useRevenue } from '../src/hooks/useRevenue';
 import { formatCurrency } from '../src/utils/currencyUtils';
+import { DailyRevenueChart } from '../components/revenue/DailyRevenueChart';
 
 export const RevenueReport: React.FC = () => {
   const currentYear = new Date().getFullYear();
@@ -97,6 +98,8 @@ export const RevenueReport: React.FC = () => {
               subtext="Đã thu / Tổng"
             />
           </div>
+
+          <DailyRevenueChart data={summary.growth.daily} year={selectedYear} />
 
           {/* Charts Row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
