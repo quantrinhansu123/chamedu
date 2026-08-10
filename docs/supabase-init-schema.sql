@@ -305,6 +305,40 @@
   create index if not exists idx_enrollments_contract_code on public.enrollments (contract_code);
 
   -- =========================
+  -- hoc_phi_da_thu
+  -- =========================
+  create table if not exists public.hoc_phi_da_thu (
+    id uuid primary key default gen_random_uuid(),
+    thang date not null,
+    lop_id uuid references public.classes(id) on delete set null,
+    lop text not null,
+    hoc_sinh_id uuid references public.students(id) on delete set null,
+    hoc_sinh text not null,
+    hoc_phi numeric(14,2) not null default 0 check (hoc_phi >= 0),
+    ngay_tao timestamptz not null default now(),
+    ngay_thanh_toan timestamptz,
+    trang_thai text not null default 'Chờ thanh toán'
+      check (trang_thai in ('Chờ thanh toán', 'Đã thanh toán', 'Đã hủy')),
+    ghi_chu text,
+    metadata jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    constraint hoc_phi_da_thu_thang_first_day check (date_trunc('month', thang)::date = thang),
+    constraint hoc_phi_da_thu_unique_month_student_class unique (thang, lop_id, hoc_sinh_id)
+  );
+
+  drop trigger if exists trg_hoc_phi_da_thu_updated_at on public.hoc_phi_da_thu;
+  create trigger trg_hoc_phi_da_thu_updated_at
+  before update on public.hoc_phi_da_thu
+  for each row execute function public.set_updated_at();
+
+  create index if not exists idx_hoc_phi_da_thu_thang on public.hoc_phi_da_thu (thang desc);
+  create index if not exists idx_hoc_phi_da_thu_lop_id on public.hoc_phi_da_thu (lop_id);
+  create index if not exists idx_hoc_phi_da_thu_hoc_sinh_id on public.hoc_phi_da_thu (hoc_sinh_id);
+  create index if not exists idx_hoc_phi_da_thu_trang_thai on public.hoc_phi_da_thu (trang_thai);
+  create index if not exists idx_hoc_phi_da_thu_ngay_thanh_toan on public.hoc_phi_da_thu (ngay_thanh_toan desc);
+
+  -- =========================
   -- users (app profile table)
   -- =========================
   create table if not exists public.users (
@@ -440,6 +474,7 @@
   alter table public.contracts enable row level security;
   alter table public.contract_items enable row level security;
   alter table public.enrollments enable row level security;
+  alter table public.hoc_phi_da_thu enable row level security;
   alter table public.users enable row level security;
   alter table public.centers enable row level security;
   alter table public.app_settings enable row level security;
@@ -491,6 +526,12 @@
     end if;
     if not exists (
       select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'hoc_phi_da_thu' and policyname = 'hoc_phi_da_thu_all_authenticated'
+    ) then
+      create policy hoc_phi_da_thu_all_authenticated on public.hoc_phi_da_thu for all to authenticated using (true) with check (true);
+    end if;
+    if not exists (
+      select 1 from pg_policies
       where schemaname = 'public' and tablename = 'staff' and policyname = 'staff_anon_dev'
     ) then
       create policy staff_anon_dev on public.staff for all to anon using (true) with check (true);
@@ -530,6 +571,12 @@
       where schemaname = 'public' and tablename = 'enrollments' and policyname = 'enrollments_anon_dev'
     ) then
       create policy enrollments_anon_dev on public.enrollments for all to anon using (true) with check (true);
+    end if;
+    if not exists (
+      select 1 from pg_policies
+      where schemaname = 'public' and tablename = 'hoc_phi_da_thu' and policyname = 'hoc_phi_da_thu_anon_dev'
+    ) then
+      create policy hoc_phi_da_thu_anon_dev on public.hoc_phi_da_thu for all to anon using (true) with check (true);
     end if;
     if not exists (
       select 1 from pg_policies

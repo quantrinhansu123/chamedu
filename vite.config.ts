@@ -6,6 +6,8 @@ import { trainingRevenueApiPlugin } from './vite-plugin-training-revenue-api';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
+    // Tránh EPERM khi Windows/antivirus khóa node_modules/.vite
+    cacheDir: path.resolve(__dirname, '.vite-cache'),
     server: {
       port: 3003,
       host: '0.0.0.0',

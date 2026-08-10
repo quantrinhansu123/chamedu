@@ -150,6 +150,9 @@ create table if not exists public.attendance (
   absent integer not null default 0,
   reserved integer not null default 0,
   tutored integer not null default 0,
+  unit_price numeric(14,2) not null default 0,
+  billable_students integer not null default 0,
+  session_amount numeric(14,2) not null default 0,
   status text not null default 'Chưa điểm danh',
   holiday_id text,
   holiday_name text,
@@ -164,9 +167,14 @@ create trigger trg_attendance_updated_at
 before update on public.attendance
 for each row execute function public.set_updated_at();
 
+alter table public.attendance add column if not exists unit_price numeric(14,2) not null default 0;
+alter table public.attendance add column if not exists billable_students integer not null default 0;
+alter table public.attendance add column if not exists session_amount numeric(14,2) not null default 0;
+
 create index if not exists idx_attendance_class_date on public.attendance(class_id, date desc);
 create index if not exists idx_attendance_session_id on public.attendance(session_id);
 create index if not exists idx_attendance_date on public.attendance(date desc);
+create index if not exists idx_attendance_session_amount on public.attendance(session_amount);
 
 create table if not exists public.student_attendance (
   id uuid primary key default gen_random_uuid(),
@@ -718,7 +726,8 @@ on conflict (id) do update set
 
 insert into public.attendance (
   id, class_id, class_name, date, session_number, session_id, total_students,
-  present, absent, reserved, tutored, status, attendance_type, created_by
+  present, absent, reserved, tutored, unit_price, billable_students,
+  session_amount, status, attendance_type, created_by
 )
 select
   public.sample_uuid('attendance-' || c.code || '-' || cs.session_number),
@@ -732,6 +741,9 @@ select
   count(s.id) filter (where right(s.code, 2)::integer % 11 = 0),
   count(s.id) filter (where right(s.code, 2)::integer % 17 = 0),
   0,
+  round(c.tuition_fee / nullif(c.total_sessions, 0), 2),
+  count(s.id) filter (where right(s.code, 2)::integer % 11 <> 0),
+  round(c.tuition_fee / nullif(c.total_sessions, 0), 2) * count(s.id) filter (where right(s.code, 2)::integer % 11 <> 0),
   'Đã điểm danh',
   'session',
   'Sample seed'
@@ -745,6 +757,9 @@ on conflict (id) do update set
   present = excluded.present,
   absent = excluded.absent,
   reserved = excluded.reserved,
+  unit_price = excluded.unit_price,
+  billable_students = excluded.billable_students,
+  session_amount = excluded.session_amount,
   status = excluded.status;
 
 insert into public.student_attendance (
